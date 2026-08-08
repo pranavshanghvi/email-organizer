@@ -1,0 +1,14 @@
+{
+  "name": "email-organizer",
+  "version": "1.0.0",
+  "description": "Organize Gmail and Obsidian emails locally",
+  "private": true,
+  "workspaces": [
+    "web",
+    "shared"
+  ],
+  "scripts": {
+    "start": "cd web && npm start",
+    "install-all": "npm install && cd web && npm install && cd ../shared && npm install"
+  }
+}

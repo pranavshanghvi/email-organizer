@@ -1,0 +1,11 @@
+{
+  "name": "email-organizer-shared",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.js",
+  "dependencies": {
+    "google-auth-library": "^9.0.0",
+    "googleapis": "^118.0.0",
+    "@google-cloud/local-auth": "^3.0.0"
+  }
+}
