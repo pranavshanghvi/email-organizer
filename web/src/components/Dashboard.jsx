@@ -1,7 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import './Dashboard.css';
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001';
+// Detect API URL at runtime
+const getApiUrl = () => {
+  if (process.env.REACT_APP_API_URL) {
+    return process.env.REACT_APP_API_URL;
+  }
+  // Production: use Railway backend
+  if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+    return 'https://web-production-d755d.up.railway.app';
+  }
+  // Local development
+  return 'http://localhost:3001';
+};
+
+const API_URL = getApiUrl();
 
 export default function Dashboard({ plans, onExecute }) {
   const [stage, setStage] = useState('start'); // start → analyze → categorize → review → done
