@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import './Dashboard.css';
 
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001';
+
 export default function Dashboard({ plans, onExecute }) {
   const [stage, setStage] = useState('start'); // start → analyze → categorize → review → done
   const [senders, setSenders] = useState([]);
@@ -12,7 +14,7 @@ export default function Dashboard({ plans, onExecute }) {
   useEffect(() => {
     const loadLabels = async () => {
       try {
-        const res = await fetch('http://localhost:3001/api/labels');
+        const res = await fetch(`${API_URL}/api/labels`);
         if (res.ok) {
           const data = await res.json();
           setLabels(data);
@@ -35,7 +37,7 @@ export default function Dashboard({ plans, onExecute }) {
     setLoading(true);
     try {
       console.log('Fetching senders from API...');
-      const res = await fetch('http://localhost:3001/api/senders');
+      const res = await fetch(`${API_URL}/api/senders`);
       if (!res.ok) throw new Error(`API error: ${res.status}`);
       const data = await res.json();
       console.log('Got senders:', data.length);
@@ -85,7 +87,7 @@ export default function Dashboard({ plans, onExecute }) {
 
       // Execute each action
       for (const sender of route) {
-        await fetch('http://localhost:3001/api/plans', {
+        await fetch(`${API_URL}/api/plans`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -98,7 +100,7 @@ export default function Dashboard({ plans, onExecute }) {
       }
 
       for (const sender of deleteBlock) {
-        await fetch('http://localhost:3001/api/plans', {
+        await fetch(`${API_URL}/api/plans`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -110,7 +112,7 @@ export default function Dashboard({ plans, onExecute }) {
       }
 
       for (const sender of deleteNoBlock) {
-        await fetch('http://localhost:3001/api/plans', {
+        await fetch(`${API_URL}/api/plans`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -122,10 +124,10 @@ export default function Dashboard({ plans, onExecute }) {
       }
 
       // Execute all newly created plans immediately
-      const plansRes = await fetch('http://localhost:3001/api/plans');
+      const plansRes = await fetch(`${API_URL}/api/plans`);
       const allPlans = await plansRes.json();
       for (const plan of allPlans) {
-        await fetch(`http://localhost:3001/api/plans/${plan.id}/execute`, { method: 'POST' });
+        await fetch(`${API_URL}/api/plans/${plan.id}/execute`, { method: 'POST' });
       }
 
       alert(`✓ Batch executed!\n\nKept: ${keep.length}\nRouted: ${route.length}\nDeleted + Blocked: ${deleteBlock.length}\nDeleted (no block): ${deleteNoBlock.length}\n\nContinue with more senders.`);
