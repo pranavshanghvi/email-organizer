@@ -140,6 +140,16 @@ async function trashEmails(messageIds) {
   return trashed;
 }
 
+async function listLabels() {
+  const client = await authorize();
+  const res = await client.users.labels.list({ userId: 'me' });
+  const labels = (res.data.labels || [])
+    .filter(label => label.type === 'user' && !label.name.includes('[Gmail]'))
+    .map(label => ({ id: label.id, name: label.name }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  return labels;
+}
+
 async function listAllSenders() {
   try {
     const client = await authorize();
@@ -205,6 +215,7 @@ module.exports = {
   authorize,
   listEmailsFromSender,
   listAllSenders,
+  listLabels,
   createLabel,
   createFilter,
   moveEmailsToLabel,

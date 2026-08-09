@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import './Dashboard.css';
 
 export default function Dashboard({ plans, onExecute }) {
@@ -6,6 +6,30 @@ export default function Dashboard({ plans, onExecute }) {
   const [senders, setSenders] = useState([]);
   const [loading, setLoading] = useState(false);
   const [categorized, setCategorized] = useState({});
+  const [labels, setLabels] = useState([]);
+  const [newLabelModal, setNewLabelModal] = useState(null);
+
+  useEffect(() => {
+    const loadLabels = async () => {
+      try {
+        const res = await fetch('http://localhost:3001/api/labels');
+        if (res.ok) {
+          const data = await res.json();
+          setLabels(data);
+        }
+      } catch (err) {
+        console.error('Failed to load labels:', err);
+      }
+    };
+    loadLabels();
+  }, []);
+
+  const getSuggestedFolder = (senderEmail) => {
+    const domain = senderEmail.split('@')[1]?.split('.')[0] || '';
+    if (!domain) return '';
+    const suggestedName = domain.charAt(0).toUpperCase() + domain.slice(1);
+    return suggestedName;
+  };
 
   const analyzeSenders = async () => {
     setLoading(true);
@@ -39,9 +63,9 @@ export default function Dashboard({ plans, onExecute }) {
   };
 
   const proceedToReview = () => {
-    const allDecided = senders.every(s => categorized[s.email]?.action);
-    if (!allDecided) {
-      alert('Please make a decision for each sender before proceeding.');
+    const hasAnyDecision = senders.some(s => categorized[s.email]?.action);
+    if (!hasAnyDecision) {
+      alert('Please select at least one action before proceeding.');
       return;
     }
     setStage('review');
@@ -51,11 +75,13 @@ export default function Dashboard({ plans, onExecute }) {
     setLoading(true);
 
     try {
-      // Group by action type
-      const keep = senders.filter(s => categorized[s.email]?.action === 'keep');
-      const route = senders.filter(s => categorized[s.email]?.action === 'route');
-      const deleteBlock = senders.filter(s => categorized[s.email]?.action === 'deleteBlock');
-      const deleteNoBlock = senders.filter(s => categorized[s.email]?.action === 'deleteNoBlock');
+      // Only process senders with selected actions (batch processing)
+      const decidedSenders = senders.filter(s => categorized[s.email]?.action);
+
+      const keep = decidedSenders.filter(s => categorized[s.email]?.action === 'keep');
+      const route = decidedSenders.filter(s => categorized[s.email]?.action === 'route');
+      const deleteBlock = decidedSenders.filter(s => categorized[s.email]?.action === 'deleteBlock');
+      const deleteNoBlock = decidedSenders.filter(s => categorized[s.email]?.action === 'deleteNoBlock');
 
       // Execute each action
       for (const sender of route) {
@@ -95,22 +121,23 @@ export default function Dashboard({ plans, onExecute }) {
         });
       }
 
-      // Execute all plans immediately
+      // Execute all newly created plans immediately
       const plansRes = await fetch('http://localhost:3001/api/plans');
       const allPlans = await plansRes.json();
       for (const plan of allPlans) {
         await fetch(`http://localhost:3001/api/plans/${plan.id}/execute`, { method: 'POST' });
       }
 
-      alert(`✓ Plan executed!\n\nKept: ${keep.length}\nRouted: ${route.length}\nDeleted + Blocked: ${deleteBlock.length}\nDeleted (no block): ${deleteNoBlock.length}`);
-      setStage('done');
+      alert(`✓ Batch executed!\n\nKept: ${keep.length}\nRouted: ${route.length}\nDeleted + Blocked: ${deleteBlock.length}\nDeleted (no block): ${deleteNoBlock.length}\n\nContinue with more senders.`);
 
-      // Reset
-      setTimeout(() => {
-        setStage('start');
-        setSenders([]);
-        setCategorized({});
-      }, 2000);
+      // Clear only the processed senders' decisions
+      const newCategorized = { ...categorized };
+      decidedSenders.forEach(s => {
+        delete newCategorized[s.email];
+      });
+      setCategorized(newCategorized);
+
+      setStage('categorize');
     } catch (err) {
       console.error('Error executing plan:', err);
       alert('Error executing plan: ' + err.message);
@@ -168,13 +195,31 @@ export default function Dashboard({ plans, onExecute }) {
                     </select>
                   </td>
                   <td>
-                    <input
-                      type="text"
-                      placeholder="Folder name"
-                      value={categorized[sender.email]?.folder || ''}
-                      onChange={(e) => updateSenderDecision(sender.email, 'folder', e.target.value)}
-                      disabled={categorized[sender.email]?.action !== 'route'}
-                    />
+                    {categorized[sender.email]?.action === 'route' ? (
+                      <div className="folder-selector">
+                        <select
+                          value={categorized[sender.email]?.folder || ''}
+                          onChange={(e) => {
+                            if (e.target.value === '__create_new__') {
+                              const suggested = getSuggestedFolder(sender.email);
+                              setNewLabelModal({ sender: sender.email, suggested });
+                            } else {
+                              updateSenderDecision(sender.email, 'folder', e.target.value);
+                            }
+                          }}
+                        >
+                          <option value="">Select folder...</option>
+                          {labels.map(label => (
+                            <option key={label.id} value={label.name}>
+                              {label.name}
+                            </option>
+                          ))}
+                          <option value="__create_new__">+ Create new folder</option>
+                        </select>
+                      </div>
+                    ) : (
+                      <span className="disabled-text">—</span>
+                    )}
                   </td>
                   <td>
                     <input
@@ -189,6 +234,45 @@ export default function Dashboard({ plans, onExecute }) {
             </tbody>
           </table>
         </div>
+
+        {newLabelModal && (
+          <div className="modal-overlay">
+            <div className="modal">
+              <h3>Create New Folder</h3>
+              <p>For: {newLabelModal.sender}</p>
+              <input
+                type="text"
+                id="new-label-input"
+                placeholder="Folder name"
+                defaultValue={newLabelModal.suggested}
+                autoFocus
+              />
+              <div className="modal-buttons">
+                <button
+                  className="secondary-btn"
+                  onClick={() => setNewLabelModal(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="primary-btn"
+                  onClick={() => {
+                    const input = document.getElementById('new-label-input');
+                    const folderName = input.value.trim();
+                    if (folderName) {
+                      updateSenderDecision(newLabelModal.sender, 'folder', folderName);
+                      setLabels([...labels, { id: folderName, name: folderName }]);
+                      setNewLabelModal(null);
+                    }
+                  }}
+                >
+                  Create
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="button-group">
           <button className="secondary-btn" onClick={() => setStage('start')}>← Back</button>
           <button className="primary-btn" onClick={proceedToReview}>Review Plan →</button>

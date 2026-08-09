@@ -42,6 +42,18 @@ app.get('/api/senders', async (req, res) => {
   }
 });
 
+app.get('/api/labels', async (req, res) => {
+  try {
+    console.log('Loading Gmail labels...');
+    const labels = await gmailApi.listLabels();
+    console.log('Loaded', labels.length, 'labels');
+    res.json(labels || []);
+  } catch (err) {
+    console.error('Failed to load labels:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/plans', (req, res) => {
   try {
     const files = fs.readdirSync(PLANS_DIR);
