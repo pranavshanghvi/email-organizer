@@ -18,18 +18,22 @@ This file ensures continuity when switching between AI models or platforms due t
 |-----------|-----------|---------|
 | Frontend (React) | `~/Claude Projects/email-organizer-repo/web` | localhost:3000 (npm start) |
 | Backend (Express) | `~/Claude Projects/email-organizer-repo/web` | localhost:3001 (node server.js) |
+| Shared Gmail code | `~/Claude Projects/email-organizer-repo/shared/gmail-api.js` | — |
 
-Single repository structure: frontend in `web/src`, backend in `web/server.js`, shared code in `web/shared/`.
+Single repository structure: frontend in `web/src`, backend in `web/server.js`, shared code in `shared/` at repo root (server requires `../shared/gmail-api`).
+
+**Current running state (2026-08-10, end of session):** both local servers are running the latest code — frontend on :3000, backend on :3001 (started detached, no terminal). All work committed and pushed to `main`.
 
 ## Critical rules (will break things if violated)
 
 - **Never trigger Gmail API sync without asking Pranav first** — `/api/senders` fetches from Gmail, every call uses API quota
+- **Never run destructive execution (delete/archive/move) on real senders without Pranav's explicit go** — it's permanent, no undo
 - **Never modify demo data without approval** — not applicable yet (no demo mode built)
-- **Archive is different from Delete** — archive removes INBOX label only, delete moves to trash + creates filter
-- **Gmail filter auto-creation** — route/delete/archive actions must create corresponding filters so future emails auto-process
-- **Success feedback is mandatory** — after batch execution, show both banner and modal with accurate counts
+- **Archive is different from Delete** — archive removes INBOX label only (moves to All Mail), delete moves to Trash + creates a block filter
+- **Gmail filter auto-creation** — route/delete/archive actions must create corresponding filters so future emails auto-process. Filter creation is now idempotent (duplicate = 400/failedPrecondition/"Filter already exists" is caught and ignored)
+- **Success feedback is mandatory** — after batch execution, show both banner and modal with counts. The banner now waits for the background jobs to actually finish and alerts if any failed
 - **Batch processing is NOT all-or-nothing** — user can select 2-3 senders and execute, leaving rest for batch 2
-- **Sender emails must be clickable** — opens Gmail search in new tab, doesn't load emails in-app
+- **Sender emails must be clickable** — `<a target="_blank">` opens Gmail search in a new tab; scan auto-saves to sessionStorage so it survives navigation
 
 ## Environment variables (local setup)
 
@@ -46,54 +50,43 @@ Single repository structure: frontend in `web/src`, backend in `web/server.js`, 
 
 ## Current status
 
-> **Last updated:** 2026-08-10 (this session)
+> **Last updated:** 2026-08-10 (this session — fixes tested live, committed, pushed)
 
 ### What's working
-- Gmail inbox scan: lists senders with email counts (up to 2500 emails across 5 pages) — **now ~11s** (was minutes) via 25-parallel header fetches
-- **Live scan progress bar** on start screen ("Scanning 1,200 of 2,500 emails…")
+- Gmail inbox scan: lists senders with email counts (up to 2500 emails across 5 pages) — **~11s** (was minutes) via 25-parallel header fetches
+- **Live scan progress bar** on start screen ("Scanning 1,200 of 2,500 emails…") via `GET /api/senders/status`
 - Batch categorization: dropdown actions (Keep, Route to folder, Delete + Block, Delete/Archive, Manual review)
 - Folder management: auto-load existing Gmail labels, create new folders with auto-suggested names
-- Sender preview: click email to open Gmail search in **new tab** (proper `<a target="_blank">` with Gmail's exact URL format)
-- **Scan auto-saves** (sessionStorage) — reload or tab navigation restores senders + decisions, no data loss
+- Sender preview: click email to open Gmail search in **new tab** (real `<a target="_blank" rel="noopener noreferrer">` with Gmail's exact URL format)
+- **Scan auto-saves** (sessionStorage) — reload or tab navigation restores senders + decisions; "← Back" clears
 - Plan review: summary cards grouped by action type
-- Batch execution: send plans to backend, execute via Gmail API, clear processed senders
-- Archive action: removes INBOX label (moves to All Mail)
-- **SUCCESS FEEDBACK (JUST SHIPPED 2026-08-09):**
-  - Success banner: displays counts, auto-dismisses after 5 seconds, has close button
-  - Success modal: detailed breakdown of actions (Kept, Routed, Deleted+Blocked, Archived)
-  - Counts accurately reflect processed senders
-  - Light and dark mode styling included
-  - Modal requires manual close
-  - Both shown after batch execution completes
+- Batch execution: sends plans to backend, executes via Gmail API, clears processed senders
+- **Execution is fast and actually completes** — move/archive/delete use Gmail `batchModify` (1000 emails/call)
 
-### Recent changes (this session, 2026-08-09)
-- Fixed Dashboard.jsx file structure: converted multiple if-statement returns into single cohesive return with conditional stage rendering
-- Added success banner component with auto-dismiss logic (5 second timer)
-- Added success modal component with detailed breakdown
-- Integrated success states into `commitPlan()` function
-- Added comprehensive CSS styling for both components (light + dark modes)
-- All state wired up: `successMessage` holds counts, `showSuccessModal` controls visibility
-- Component lifecycle: success triggered after batch execution, banner auto-hides, modal requires close, then returns to categorize stage
-- **FIXED: Execute button hanging** — added fetchWithTimeout (30s creation, 60s execution) on frontend, made backend async (fire-and-forget pattern) so large batch operations (137+ emails) don't block UI
-
-### Today's fixes (2026-08-10)
-1. **Scan speed** — was fetching each message header one-at-a-time (minutes); now 25 in parallel via `mapWithConcurrency` (~11s for 2500 emails). Live progress exposed via new `GET /api/senders/status` endpoint and shown on the start screen.
-2. **Scan lost on sender click** — was a `<td onClick>` with `window.open`; replaced with a real `<a target="_blank" rel="noopener noreferrer">`. Also added **sessionStorage auto-save** of senders+decisions so a reload/navigation never loses work (restored on mount; "← Back" clears).
+### All today's fixes (2026-08-10) — verified live against Pranav's Gmail
+1. **Scan speed** — was fetching each message header one-at-a-time (minutes); now 25 in parallel (`mapWithConcurrency`) → ~11s for 2500 emails. Live progress via `/api/senders/status`.
+2. **Scan lost on sender click** — was `<td onClick>` + `window.open`; replaced with a real `<a target="_blank">`. Plus sessionStorage auto-save of senders+decisions.
 3. **Gmail preview wrong/empty** — search URL now encodes the full `from:` query exactly as Gmail does (`#search/from%3Asender%40domain.com`).
-4. **Execute/Commit button stuck disabled** — `analyzeSenders()` never reset `loading` on success, so the Commit button stayed disabled. Now reset in `finally`.
-5. **Execution was failing silently in the background** (found during testing — earlier runs recorded errors while the UI showed success):
-   - `createFilter` now treats Gmail's duplicate-filter error as idempotent (status 400 / reason `failedPrecondition` / message "Filter already exists") so re-processing a sender no longer fails the run.
-   - **Delete + Block** now actually blocks future emails (creates a TRASH filter) and no longer crashes when the Obsidian vault is missing (skipped gracefully).
-   - **Archive** now creates the correct auto-archive filter (`removeLabelIds: ['INBOX']`) instead of an invalid ARCHIVE label.
-   - `commitPlan` now executes **only the plans created in the current batch** — previously it re-ran all historical plans matching a sender, causing duplicate-filter failures.
-6. **THE real "nothing happened on backend" bug (found via Pranav's live test):** move/archive/delete looped through emails **one at a time** (`users.messages.modify` per email) — 4,359 emails meant 4,359 sequential API calls (~30+ min), so execution looked dead. Replaced with Gmail's **`batchModify`** (up to 1,000 emails per call): 4,359 emails now finish in ~18s. Verified live: 704-equifax archive, 1-wellsfargo archive, and 4,359-emails→Personal all record `success`.
-7. **Success message is now truthful, not optimistic** — `commitPlan` polls the created plans until the background jobs reach a final state, then alerts if any failed (with the error) before showing the banner.
+4. **Execute/Commit button stuck disabled** — `analyzeSenders()` never reset `loading` on success; now reset in `finally`.
+5. **Silent background failures** — `createFilter` catches Gmail's duplicate error (status 400 / reason `failedPrecondition` / "Filter already exists"); Delete+Block actually blocks (TRASH filter) and skips missing Obsidian vault gracefully; Archive uses the correct `removeLabelIds: ['INBOX']` filter; `commitPlan` executes only plans created in the current batch (not all historical plans for a sender).
+6. **THE "nothing happened on backend" bug** — move/archive/delete looped one email per API call (4359 emails = 4359 calls, 30+ min). Rewrote with Gmail `batchModify` (chunks of 1000). **Verified:** 4,359-email move to "Personal" completed in ~18s; 704-email archive completed; all record `success`.
+7. **Truthful success message** — `commitPlan` polls created plans until background jobs finish (2-min deadline), then alerts if any failed before showing the banner.
+
+### ⚠️ IMPORTANT — Pranav's Gmail was changed by live testing today
+During his test, real actions ran on his account. **Ask Pranav before assuming these are wanted:**
+- **4,359 emails from pranavshanghvi@gmail.com were moved to the "Personal" label** (he approved finishing this move)
+- **704 emails from info@e.equifax.com were archived** (removed from INBOX)
+- **1 email from careers@talentcommunity.wellsfargo.com archived**
+- A filter now auto-routes future mail from pranavshanghvi@gmail.com to "Personal"
+- A "Personal" label was created
+
+If he wants any of this reversed, undoing is straightforward: batchModify to `removeLabelIds: ['Personal']` / `addLabelIds: ['INBOX']`, and delete the filters.
 
 ### Known issues
-- Pagination hardcoded to 5 pages (MAX_PAGES in gmail-api.js)
+- Pagination hardcoded to 5 pages (MAX_PAGES in gmail-api.js) — caps scan at 2500 emails
 - No undo after commit — actions are permanent
 - No dedup handling — same sender appears once with total count
-- Success banner is optimistic — shows immediately; background job status is recorded on the plan (check history) but not surfaced live in the UI
+- Scan count in app is capped at 2500; Gmail preview may show more emails than the app's count for a sender
 
 ---
 
@@ -101,10 +94,10 @@ Single repository structure: frontend in `web/src`, backend in `web/server.js`, 
 
 *(Reviewed 2026-08-10.)*
 
-1. **Full workflow TESTED end-to-end (2026-08-10)** — automated browser test drove scan → categorize → review → commit-enabled → reload-restore. Execute pipeline tested against real Gmail with fake senders (delete/folder/archive all record `success`); test artifacts cleaned up after. Remaining: Pranav to do one real Commit click on senders he chooses.
+1. **Pranav to do one real Commit click on senders he chooses** to confirm the permanent action works live (the button, execution, and truthfulness of the success message are all verified — only his final real-world confirmation remains)
 2. **Mobile preview** — verify responsive layout works on iPhone viewport (375px)
 3. **Deployment to Railway** — push to Railway, test production API URL detection
-4. **Document setup steps** — create user-facing guide for Gmail OAuth setup (credentials.json creation, first-time auth)
+4. **Document setup steps** — user-facing guide for Gmail OAuth setup (credentials.json creation, first-time auth)
 
 ### Also noted (low priority)
 - **Add undo capability** — save pre-filter state, allow rollback
@@ -113,7 +106,7 @@ Single repository structure: frontend in `web/src`, backend in `web/server.js`, 
 
 ### Uncommitted changes
 
-As of 2026-08-10: local dev servers running (frontend :3000, backend :3001). Most of today's work is committed; the final `commitPlan` batch-scoping fix is being committed at session close.
+**None — working tree is clean. All today's work committed and pushed to `main`** as of 2026-08-10. Local servers running the latest code (frontend :3000, backend :3001).
 
 ---
 
@@ -125,23 +118,24 @@ As of 2026-08-10: local dev servers running (frontend :3000, backend :3001). Mos
 - **Wants to learn** — explain what you're doing and why
 - **Wants elegance** — if a fix feels hacky, do the proper version
 - **Commercial vision** — building toward a real product, not just personal use
+- **Wants comprehensive testing before being told something is done** — run the real flow, verify live, then report. Don't say "done" on untested code.
 
 ---
 
-## Verification checklist (abbreviated)
+## Verification checklist (required before reporting done)
 
-Before reporting any work as done:
-1. React dev server compiles with no errors (`npm start`)
-2. Backend runs with no errors (`node server.js`)
-3. Test the feature on desktop and mobile viewports
-4. Check browser console for errors
-5. Verify Gmail API interactions via server logs
+1. Frontend compiles (`npm run build`) and dev server runs with no errors
+2. Backend starts clean (`node server.js`) and syntax-checks (`node --check`)
+3. **Run the real flow** — scan (watch progress bar + timing), click a sender (new tab + scan persists), categorize, Review, verify Commit enabled, reload-restore
+4. **Verify execution actually completes** — create/execute plans with a low-count or idempotent sender, confirm the plan file records `success` and the Gmail side changed (filters/labels), then clean up test artifacts
+5. Check server logs for hidden background errors (silent failures show up only there)
+6. Never claim success on destructive actions without a real run — and never run destructive actions on real senders without Pranav's go-ahead
 
 ---
 
 ## Session handoff
 
-When a session ends and handing off to OmniRoute:
+When a session ends and handing off:
 
 1. **Commit and push** all changes to the git repo
 2. **Update HANDOFF.md** with current status and what's next
@@ -150,5 +144,5 @@ When a session ends and handing off to OmniRoute:
 
 When the next model picks up:
 1. Read `CLAUDE.md` and this `HANDOFF.md`
-2. Run `git status` to see any uncommitted work
-3. Ask Pranav what he wants to work on next
+2. Check server status on :3000 and :3001 (restart if down: from `web/`, `npm start` for frontend, `node server.js` for backend)
+3. Ask Pranav what he wants to work on
