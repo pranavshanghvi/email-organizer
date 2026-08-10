@@ -30,16 +30,38 @@ function generateId() {
   return Date.now().toString(36) + Math.random().toString(36).substr(2);
 }
 
+// Live progress for the current Gmail scan, polled by the frontend.
+let scanStatus = { status: 'idle', fetched: 0, total: 0, error: null };
+
 app.get('/api/senders', async (req, res) => {
   try {
     console.log('Loading senders...');
-    const senders = await gmailApi.listAllSenders();
+    scanStatus = { status: 'running', fetched: 0, total: 0, error: null };
+    const senders = await gmailApi.listAllSenders((progress) => {
+      scanStatus = { ...scanStatus, ...progress };
+    });
+    scanStatus = {
+      status: 'done',
+      fetched: scanStatus.fetched || 0,
+      total: scanStatus.total || 0,
+      error: null,
+    };
     console.log('Loaded', senders.length, 'unique senders');
     res.json(senders || []);
   } catch (err) {
+    scanStatus = {
+      status: 'error',
+      fetched: scanStatus.fetched || 0,
+      total: scanStatus.total || 0,
+      error: err.message,
+    };
     console.error('Failed to load senders:', err.message, err.stack);
     res.status(500).json({ error: err.message });
   }
+});
+
+app.get('/api/senders/status', (req, res) => {
+  res.json(scanStatus);
 });
 
 app.get('/api/labels', async (req, res) => {

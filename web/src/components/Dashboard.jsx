@@ -20,6 +20,7 @@ export default function Dashboard({ plans, onExecute, onStageChange, triggerRevi
   const [stage, setStage] = useState('start'); // start → analyze → categorize → review → done
   const [senders, setSenders] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [scanProgress, setScanProgress] = useState(null);
   const [categorized, setCategorized] = useState({});
   const [labels, setLabels] = useState([]);
   const [newLabelModal, setNewLabelModal] = useState(null);
@@ -62,13 +63,29 @@ export default function Dashboard({ plans, onExecute, onStageChange, triggerRevi
     return suggestedName;
   };
 
-  const showEmailPreview = (senderEmail, senderCount) => {
-    const gmailSearchUrl = `https://mail.google.com/mail/u/0/#search/from:${encodeURIComponent(senderEmail)}`;
-    window.open(gmailSearchUrl, '_blank');
+  // Build the same Gmail search URL Gmail itself produces, so the query
+  // reliably opens a filtered view of this sender's emails.
+  const getGmailSearchUrl = (senderEmail) => {
+    return `https://mail.google.com/mail/u/0/#search/${encodeURIComponent(`from:${senderEmail}`)}`;
   };
 
   const analyzeSenders = async () => {
     setLoading(true);
+    setScanProgress({ fetched: 0, total: 0 });
+
+    // Poll the backend for scan progress so the user sees it working.
+    const statusInterval = setInterval(async () => {
+      try {
+        const res = await fetch(`${API_URL}/api/senders/status`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.status === 'running') setScanProgress(data);
+        }
+      } catch (err) {
+        // Ignore — the main scan request will surface real errors
+      }
+    }, 400);
+
     try {
       console.log('Fetching senders from API...');
       const res = await fetch(`${API_URL}/api/senders`);
@@ -83,14 +100,15 @@ export default function Dashboard({ plans, onExecute, onStageChange, triggerRevi
         init[s.email] = { action: null, folder: null, notes: '' };
       });
       setCategorized(init);
-      setTimeout(() => {
-        setStage('categorize');
-        onStageChange?.('categorize');
-      }, 100);
+      setStage('categorize');
+      onStageChange?.('categorize');
     } catch (err) {
       console.error('Failed to load senders:', err);
       alert('Error scanning Gmail: ' + err.message);
+    } finally {
+      clearInterval(statusInterval);
       setLoading(false);
+      setScanProgress(null);
     }
   };
 
@@ -289,9 +307,27 @@ export default function Dashboard({ plans, onExecute, onStageChange, triggerRevi
         <div className="stage-container">
           <h2>Email Cleanup Organizer</h2>
           <p>Analyze your Gmail inbox and create a customized cleanup plan.</p>
-          <button className="primary-btn" onClick={analyzeSenders} disabled={loading}>
-            {loading ? 'Scanning Gmail...' : '🔍 Scan & Analyze'}
-          </button>
+          {loading ? (
+            <div className="scan-progress">
+              {scanProgress && scanProgress.total > 0 ? (
+                <>
+                  <div className="progress-bar">
+                    <div
+                      className="progress-fill"
+                      style={{ width: `${Math.min(100, (scanProgress.fetched / scanProgress.total) * 100)}%` }}
+                    />
+                  </div>
+                  <p>Scanning {scanProgress.fetched.toLocaleString()} of {scanProgress.total.toLocaleString()} emails…</p>
+                </>
+              ) : (
+                <p>Connecting to Gmail…</p>
+              )}
+            </div>
+          ) : (
+            <button className="primary-btn" onClick={analyzeSenders}>
+              🔍 Scan & Analyze
+            </button>
+          )}
         </div>
       )}
 
@@ -314,8 +350,15 @@ export default function Dashboard({ plans, onExecute, onStageChange, triggerRevi
               <tbody>
                 {senders.map(sender => (
                   <tr key={sender.email}>
-                    <td className="sender-email" onClick={() => showEmailPreview(sender.email, sender.count)} title="Click to preview emails">
-                      <span style={{ cursor: 'pointer', textDecoration: 'underline', color: '#3b82f6' }}>{sender.email}</span>
+                    <td className="sender-email">
+                      <a
+                        href={getGmailSearchUrl(sender.email)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title="Open all emails from this sender in Gmail"
+                      >
+                        {sender.email}
+                      </a>
                     </td>
                     <td className="count">{sender.count.toLocaleString()}</td>
                     <td>

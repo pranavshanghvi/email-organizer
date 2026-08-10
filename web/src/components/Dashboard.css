@@ -21,6 +21,30 @@
   margin: 0.5rem 0;
 }
 
+.scan-progress {
+  margin: 1.5rem auto 0;
+  max-width: 400px;
+}
+
+.scan-progress p {
+  margin-top: 0.75rem;
+  font-size: 0.875rem;
+}
+
+.progress-bar {
+  height: 0.5rem;
+  background: #e5e7eb;
+  border-radius: 9999px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: #3b82f6;
+  border-radius: 9999px;
+  transition: width 0.3s ease;
+}
+
 .primary-btn, .secondary-btn, .commit-btn {
   padding: 0.75rem 1.5rem;
   border: none;
@@ -113,13 +137,16 @@
   font-size: 0.75rem;
   word-break: break-all;
   max-width: 250px;
-  cursor: pointer;
   user-select: none;
 }
 
-.sender-email span:hover {
-  color: #1e40af !important;
+.sender-email a {
+  color: #3b82f6;
   text-decoration: underline;
+}
+
+.sender-email a:hover {
+  color: #1e40af;
 }
 
 .count {
@@ -512,6 +539,10 @@
 
   .success-label {
     color: #d1d5db;
+  }
+
+  .progress-bar {
+    background: #374151;
   }
 
 }

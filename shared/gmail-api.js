@@ -166,14 +166,39 @@ async function listLabels() {
   return labels;
 }
 
-async function listAllSenders() {
+// Run `mapper` over every item, executing up to `limit` of them at once.
+// This is what turns a slow one-at-a-time Gmail scan into a parallel one.
+async function mapWithConcurrency(items, limit, mapper, onItemDone) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+
+  const worker = async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex++;
+      results[index] = await mapper(items[index], index);
+      onItemDone?.();
+    }
+  };
+
+  const workers = [];
+  for (let i = 0; i < Math.min(limit, items.length); i++) {
+    workers.push(worker());
+  }
+  await Promise.all(workers);
+  return results;
+}
+
+async function listAllSenders(onProgress) {
   try {
     const client = await authorize();
     const senders = {};
 
     let pageToken = null;
     const MAX_PAGES = 5; // Limit to first 2500 emails for performance
+    const CONCURRENCY = 25; // Fetch this many messages' headers at the same time
     let pageCount = 0;
+    let total = 0;
+    let processed = 0;
 
     while (pageCount < MAX_PAGES) {
       const res = await client.users.messages.list({
@@ -185,35 +210,47 @@ async function listAllSenders() {
       const messages = res.data.messages || [];
       if (messages.length === 0) break;
 
-      // Fetch each message with From header
-      for (const msg of messages) {
-        try {
-          const fullMsg = await client.users.messages.get({
-            userId: 'me',
-            id: msg.id,
-            format: 'metadata',
-            metadataHeaders: ['From'],
-          });
-
-          const headers = fullMsg.data.payload?.headers || [];
-          const fromHeader = headers.find(h => h.name === 'From');
-          if (fromHeader && fromHeader.value) {
-            // Extract email from "Name <email@example.com>" format
-            const match = fromHeader.value.match(/<(.+?)>/);
-            const senderEmail = match ? match[1].trim() : fromHeader.value.trim();
-            if (senderEmail) {
-              senders[senderEmail] = (senders[senderEmail] || 0) + 1;
-            }
-          }
-        } catch (err) {
-          // Skip messages we can't fetch
-          continue;
-        }
-      }
-
+      total += messages.length;
       pageToken = res.data.nextPageToken;
       pageCount++;
-      if (!pageToken) break;
+
+      // Fetch each message's From header in parallel batches instead of
+      // one-at-a-time — this is the main reason the scan was so slow.
+      const fromHeaders = await mapWithConcurrency(
+        messages,
+        CONCURRENCY,
+        async (msg) => {
+          try {
+            const fullMsg = await client.users.messages.get({
+              userId: 'me',
+              id: msg.id,
+              format: 'metadata',
+              metadataHeaders: ['From'],
+            });
+
+            const headers = fullMsg.data.payload?.headers || [];
+            const fromHeader = headers.find(h => h.name === 'From');
+            if (fromHeader && fromHeader.value) {
+              // Extract email from "Name <email@example.com>" format
+              const match = fromHeader.value.match(/<(.+?)>/);
+              return match ? match[1].trim() : fromHeader.value.trim();
+            }
+          } catch (err) {
+            // Skip messages we can't fetch
+          }
+          return null;
+        },
+        () => {
+          processed++;
+          onProgress?.({ fetched: processed, total });
+        }
+      );
+
+      for (const email of fromHeaders) {
+        if (email) {
+          senders[email] = (senders[email] || 0) + 1;
+        }
+      }
     }
 
     const result = Object.entries(senders)
