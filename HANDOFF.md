@@ -46,13 +46,15 @@ Single repository structure: frontend in `web/src`, backend in `web/server.js`, 
 
 ## Current status
 
-> **Last updated:** 2026-08-09 (this session)
+> **Last updated:** 2026-08-10 (this session)
 
 ### What's working
-- Gmail inbox scan: lists senders with email counts (up to 2500 emails across 5 pages)
+- Gmail inbox scan: lists senders with email counts (up to 2500 emails across 5 pages) — **now ~11s** (was minutes) via 25-parallel header fetches
+- **Live scan progress bar** on start screen ("Scanning 1,200 of 2,500 emails…")
 - Batch categorization: dropdown actions (Keep, Route to folder, Delete + Block, Delete/Archive, Manual review)
 - Folder management: auto-load existing Gmail labels, create new folders with auto-suggested names
-- Sender preview: click email to open Gmail search in new tab
+- Sender preview: click email to open Gmail search in **new tab** (proper `<a target="_blank">` with Gmail's exact URL format)
+- **Scan auto-saves** (sessionStorage) — reload or tab navigation restores senders + decisions, no data loss
 - Plan review: summary cards grouped by action type
 - Batch execution: send plans to backend, execute via Gmail API, clear processed senders
 - Archive action: removes INBOX label (moves to All Mail)
@@ -74,34 +76,42 @@ Single repository structure: frontend in `web/src`, backend in `web/server.js`, 
 - Component lifecycle: success triggered after batch execution, banner auto-hides, modal requires close, then returns to categorize stage
 - **FIXED: Execute button hanging** — added fetchWithTimeout (30s creation, 60s execution) on frontend, made backend async (fire-and-forget pattern) so large batch operations (137+ emails) don't block UI
 
+### Today's fixes (2026-08-10)
+1. **Scan speed** — was fetching each message header one-at-a-time (minutes); now 25 in parallel via `mapWithConcurrency` (~11s for 2500 emails). Live progress exposed via new `GET /api/senders/status` endpoint and shown on the start screen.
+2. **Scan lost on sender click** — was a `<td onClick>` with `window.open`; replaced with a real `<a target="_blank" rel="noopener noreferrer">`. Also added **sessionStorage auto-save** of senders+decisions so a reload/navigation never loses work (restored on mount; "← Back" clears).
+3. **Gmail preview wrong/empty** — search URL now encodes the full `from:` query exactly as Gmail does (`#search/from%3Asender%40domain.com`).
+4. **Execute/Commit button stuck disabled** — `analyzeSenders()` never reset `loading` on success, so the Commit button stayed disabled. Now reset in `finally`.
+5. **Execution was failing silently in the background** (found during testing — earlier runs recorded errors while the UI showed success):
+   - `createFilter` now treats Gmail's 409 "duplicate" as idempotent (re-processing a sender no longer errors).
+   - **Delete + Block** now actually blocks future emails (creates a TRASH filter) and no longer crashes when the Obsidian vault is missing (skipped gracefully).
+   - **Archive** now creates the correct auto-archive filter (`removeLabelIds: ['INBOX']`) instead of an invalid ARCHIVE label.
+   - `commitPlan` now executes **only the plans created in the current batch** — previously it re-ran all historical plans matching a sender, causing duplicate-filter failures.
+
 ### Known issues
-- Scan takes 15-30 seconds (fetching email metadata from Gmail)
 - Pagination hardcoded to 5 pages (MAX_PAGES in gmail-api.js)
 - No undo after commit — actions are permanent
 - No dedup handling — same sender appears once with total count
+- Success banner is optimistic — shows immediately; background job status is recorded on the plan (check history) but not surfaced live in the UI
 
 ---
 
 ## In-flight work
 
-*(Priority list as reviewed 2026-08-09.)*
+*(Reviewed 2026-08-10.)*
 
-1. **Test the full workflow end-to-end** — scan → select senders → review → execute → verify success feedback displays correctly
+1. **Full workflow TESTED end-to-end (2026-08-10)** — automated browser test drove scan → categorize → review → commit-enabled → reload-restore. Execute pipeline tested against real Gmail with fake senders (delete/folder/archive all record `success`); test artifacts cleaned up after. Remaining: Pranav to do one real Commit click on senders he chooses.
 2. **Mobile preview** — verify responsive layout works on iPhone viewport (375px)
 3. **Deployment to Railway** — push to Railway, test production API URL detection
 4. **Document setup steps** — create user-facing guide for Gmail OAuth setup (credentials.json creation, first-time auth)
 
 ### Also noted (low priority)
-- **Optimize scan performance** — consider batching Gmail API calls, showing progress indicator
 - **Add undo capability** — save pre-filter state, allow rollback
 - **Bulk select** — select/deselect multiple senders at once
 - **Search/filter senders** — find specific sender by email or domain
 
 ### Uncommitted changes
 
-**All files committed and pushed as of 2026-08-09 end of session.**
-
-Git status: clean. No uncommitted work.
+As of 2026-08-10: local dev servers running (frontend :3000, backend :3001). Most of today's work is committed; the final `commitPlan` batch-scoping fix is being committed at session close.
 
 ---
 

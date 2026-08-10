@@ -248,21 +248,14 @@ export default function Dashboard({ plans, onExecute, onStageChange, triggerRevi
       }
 
       console.log('Executing plans...');
-      // Fetch all plans (includes all previous ones too)
-      const plansRes = await fetchWithTimeout(`${API_URL}/api/plans`, {}, 10000);
-      if (!plansRes.ok) throw new Error(`Failed to fetch plans: ${plansRes.status}`);
-      const allPlans = await plansRes.json();
-      console.log('Total plans to execute:', allPlans.length);
+      console.log('Total plans to execute:', createdPlanIds.length);
 
-      // Execute only newly created plans (just the decided senders)
-      for (const plan of allPlans) {
-        const senderMatch = decidedSenders.find(s => plan.sender === s.email);
-        if (senderMatch) {
-          console.log('Executing plan for', plan.sender);
-          const execRes = await fetchWithTimeout(`${API_URL}/api/plans/${plan.id}/execute`, { method: 'POST' }, 60000);
-          if (!execRes.ok) throw new Error(`Failed to execute plan ${plan.id}: ${execRes.status}`);
-          console.log('Plan executed for', plan.sender);
-        }
+      // Execute only the plans created in this batch — never re-run old plans.
+      for (const planId of createdPlanIds) {
+        console.log('Executing plan', planId);
+        const execRes = await fetchWithTimeout(`${API_URL}/api/plans/${planId}/execute`, { method: 'POST' }, 60000);
+        if (!execRes.ok) throw new Error(`Failed to execute plan ${planId}: ${execRes.status}`);
+        console.log('Plan executed', planId);
       }
 
       console.log('Batch executed successfully');
