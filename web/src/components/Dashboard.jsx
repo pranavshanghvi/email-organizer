@@ -16,6 +16,10 @@ const getApiUrl = () => {
 
 const API_URL = getApiUrl();
 
+// Key used to persist the current scan in sessionStorage. This is what makes
+// the scan survive a page reload or tab navigation — you never lose your work.
+const STORAGE_KEY = 'emailOrganizerState';
+
 export default function Dashboard({ plans, onExecute, onStageChange, triggerReview, onReviewTriggered }) {
   const [stage, setStage] = useState('start'); // start → analyze → categorize → review → done
   const [senders, setSenders] = useState([]);
@@ -26,6 +30,41 @@ export default function Dashboard({ plans, onExecute, onStageChange, triggerRevi
   const [newLabelModal, setNewLabelModal] = useState(null);
   const [successMessage, setSuccessMessage] = useState(null);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
+
+  // On mount, restore a previous scan if one was saved (e.g. after the page
+  // navigated away to Gmail and came back, or after a reload).
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const saved = JSON.parse(raw);
+        if (saved && Array.isArray(saved.senders) && saved.senders.length > 0) {
+          setSenders(saved.senders);
+          setCategorized(saved.categorized || {});
+          setStage('categorize');
+        }
+      }
+    } catch (err) {
+      console.error('Failed to restore saved scan:', err);
+    }
+  }, []);
+
+  // Persist the current scan whenever it changes, so it survives navigation.
+  useEffect(() => {
+    if (senders.length === 0) return;
+    try {
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ senders, categorized, stage }));
+    } catch (err) {
+      // Storage unavailable — ignore
+    }
+  }, [senders, categorized, stage]);
+
+  const resetToStart = () => {
+    sessionStorage.removeItem(STORAGE_KEY);
+    setSenders([]);
+    setCategorized({});
+    setStage('start');
+  };
 
   useEffect(() => {
     if (triggerReview) {
@@ -72,6 +111,7 @@ export default function Dashboard({ plans, onExecute, onStageChange, triggerRevi
   const analyzeSenders = async () => {
     setLoading(true);
     setScanProgress({ fetched: 0, total: 0 });
+    sessionStorage.removeItem(STORAGE_KEY);
 
     // Poll the backend for scan progress so the user sees it working.
     const statusInterval = setInterval(async () => {
@@ -145,6 +185,10 @@ export default function Dashboard({ plans, onExecute, onStageChange, triggerRevi
 
       console.log('Creating plans...', { keep: keep.length, route: route.length, deleteBlock: deleteBlock.length, deleteNoBlock: deleteNoBlock.length });
 
+      // Track the plans created in THIS batch so we only execute those —
+      // never re-run older plans for the same sender.
+      const createdPlanIds = [];
+
       // Helper function with timeout
       const fetchWithTimeout = (url, options = {}, timeout = 30000) => {
         return Promise.race([
@@ -167,6 +211,8 @@ export default function Dashboard({ plans, onExecute, onStageChange, triggerRevi
           }),
         });
         if (!res.ok) throw new Error(`Failed to create route plan: ${res.status}`);
+        const createdPlan = await res.json();
+        if (createdPlan?.id) createdPlanIds.push(createdPlan.id);
       }
 
       for (const sender of deleteBlock) {
@@ -181,6 +227,8 @@ export default function Dashboard({ plans, onExecute, onStageChange, triggerRevi
           }),
         });
         if (!res.ok) throw new Error(`Failed to create delete plan: ${res.status}`);
+        const createdPlan = await res.json();
+        if (createdPlan?.id) createdPlanIds.push(createdPlan.id);
       }
 
       for (const sender of deleteNoBlock) {
@@ -195,6 +243,8 @@ export default function Dashboard({ plans, onExecute, onStageChange, triggerRevi
           }),
         });
         if (!res.ok) throw new Error(`Failed to create archive plan: ${res.status}`);
+        const createdPlan = await res.json();
+        if (createdPlan?.id) createdPlanIds.push(createdPlan.id);
       }
 
       console.log('Executing plans...');
@@ -454,7 +504,7 @@ export default function Dashboard({ plans, onExecute, onStageChange, triggerRevi
           )}
 
           <div className="button-group">
-            <button className="secondary-btn" onClick={() => setStage('start')}>← Back</button>
+            <button className="secondary-btn" onClick={resetToStart}>← Back</button>
             <button className="primary-btn" onClick={proceedToReview}>Review Plan →</button>
           </div>
         </>

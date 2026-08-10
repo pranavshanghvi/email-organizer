@@ -95,18 +95,31 @@ async function createLabel(labelName) {
   return res.data.id;
 }
 
-async function createFilter(senderEmail, labelId) {
+// Creates a Gmail filter for a sender. `action` is the filter action object,
+// e.g. { addLabelIds: [labelId] } to route, { removeLabelIds: ['INBOX'] } to
+// auto-archive, or { addLabelIds: ['TRASH'] } to block future emails.
+async function createFilter(senderEmail, action) {
   const client = await authorize();
 
   const filterBody = {
     criteria: { from: senderEmail },
-    action: { addLabelIds: [labelId] },
+    action,
   };
 
-  await client.users.settings.filters.create({
-    userId: 'me',
-    requestBody: filterBody,
-  });
+  try {
+    await client.users.settings.filters.create({
+      userId: 'me',
+      requestBody: filterBody,
+    });
+  } catch (err) {
+    // Gmail rejects an identical duplicate filter with 409 — this is normal
+    // when a sender is processed more than once. Treat it as idempotent.
+    const reason = err?.errors?.[0]?.reason;
+    if (err.code === 409 || reason === 'duplicate') {
+      return;
+    }
+    throw err;
+  }
 }
 
 async function moveEmailsToLabel(messageIds, labelId) {

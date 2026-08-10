@@ -145,19 +145,28 @@ app.post('/api/plans/:id/execute', async (req, res) => {
           await gmailApi.trashEmails(emailIds);
           execution.gmailCount = emailIds.length;
 
-          const obsidianFiles = obsidianApi.listEmailFilesFromSender(plan.sender);
-          const filePaths = obsidianFiles.map(f => f.path);
-          execution.obsidianCount = obsidianApi.deleteObsidianFiles(filePaths);
+          // "Block" future emails from this sender by auto-trashing them.
+          await gmailApi.createFilter(plan.sender, { addLabelIds: ['TRASH'] });
+
+          // Obsidian cleanup is optional — a missing vault must not fail the run.
+          try {
+            const obsidianFiles = obsidianApi.listEmailFilesFromSender(plan.sender);
+            const filePaths = obsidianFiles.map(f => f.path);
+            execution.obsidianCount = obsidianApi.deleteObsidianFiles(filePaths);
+          } catch (obsErr) {
+            console.log(`Obsidian cleanup skipped for ${plan.sender}: ${obsErr.message}`);
+          }
         } else if (plan.action === 'folder') {
           console.log(`Moving ${emailIds.length} emails to folder ${plan.folderName}...`);
           const labelId = await gmailApi.createLabel(plan.folderName);
           await gmailApi.moveEmailsToLabel(emailIds, labelId);
-          await gmailApi.createFilter(plan.sender, labelId);
+          await gmailApi.createFilter(plan.sender, { addLabelIds: [labelId] });
           execution.gmailCount = emailIds.length;
         } else if (plan.action === 'archive') {
           console.log(`Archiving ${emailIds.length} emails...`);
           await gmailApi.archiveEmails(emailIds);
-          await gmailApi.createFilter(plan.sender, 'ARCHIVE');
+          // Auto-archive future emails by removing them from the INBOX.
+          await gmailApi.createFilter(plan.sender, { removeLabelIds: ['INBOX'] });
           execution.gmailCount = emailIds.length;
         }
 
