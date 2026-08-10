@@ -4,23 +4,37 @@ import Dashboard from './components/Dashboard';
 import PlanBuilder from './components/PlanBuilder';
 import ExecutionLog from './components/ExecutionLog';
 
+const getApiUrl = () => {
+  if (process.env.REACT_APP_API_URL) {
+    return process.env.REACT_APP_API_URL;
+  }
+  if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+    return 'https://web-production-d755d.up.railway.app';
+  }
+  return 'http://localhost:3001';
+};
+
+const API_URL = getApiUrl();
+
 export default function App() {
   const [view, setView] = useState('dashboard'); // dashboard, builder, history
   const [plans, setPlans] = useState([]);
+  const [dashboardStage, setDashboardStage] = useState('start');
+  const [triggerReview, setTriggerReview] = useState(false);
 
   useEffect(() => {
     loadPlans();
   }, []);
 
   const loadPlans = () => {
-    fetch('http://localhost:3001/api/plans')
+    fetch(`${API_URL}/api/plans`)
       .then(r => r.json())
       .then(data => setPlans(data))
       .catch(err => console.error('Failed to load plans:', err));
   };
 
   const createPlan = (plan) => {
-    fetch('http://localhost:3001/api/plans', {
+    fetch(`${API_URL}/api/plans`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(plan),
@@ -34,7 +48,7 @@ export default function App() {
   };
 
   const executePlan = (planId) => {
-    fetch(`http://localhost:3001/api/plans/${planId}/execute`, { method: 'POST' })
+    fetch(`${API_URL}/api/plans/${planId}/execute`, { method: 'POST' })
       .then(r => r.json())
       .then(result => {
         alert('Plan executed! Check the history for details.');
@@ -54,6 +68,15 @@ export default function App() {
           >
             Dashboard
           </button>
+          {dashboardStage === 'categorize' ? (
+            <button
+              className="review-nav-btn"
+              onClick={() => setTriggerReview(true)}
+              title="Go to review"
+            >
+              ✓ Review
+            </button>
+          ) : null}
           <button
             className={view === 'builder' ? 'active' : ''}
             onClick={() => setView('builder')}
@@ -71,7 +94,13 @@ export default function App() {
 
       <main className="main-content">
         {view === 'dashboard' && (
-          <Dashboard plans={plans} onExecute={executePlan} />
+          <Dashboard
+            plans={plans}
+            onExecute={executePlan}
+            onStageChange={setDashboardStage}
+            triggerReview={triggerReview}
+            onReviewTriggered={() => setTriggerReview(false)}
+          />
         )}
         {view === 'builder' && (
           <PlanBuilder onCreate={createPlan} />

@@ -48,6 +48,13 @@
   border-color: #3b82f6;
 }
 
+.review-nav-btn {
+  background: #10b981 !important;
+  color: white !important;
+  border-color: #10b981 !important;
+  cursor: default !important;
+}
+
 .main-content {
   flex: 1;
   padding: 2rem;
@@ -61,4 +68,5 @@
   .nav-buttons button { background: #1a1f2e; color: #f1f5f9; border-color: #374151; }
   .nav-buttons button:hover { background: #2d3748; }
   .nav-buttons button.active { background: #3b82f6; border-color: #3b82f6; }
+  .review-nav-btn { background: #10b981 !important; border-color: #10b981 !important; }
 }

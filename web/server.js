@@ -123,6 +123,7 @@ app.post('/api/plans/:id/execute', async (req, res) => {
       await gmailApi.createFilter(plan.sender, labelId);
       execution.gmailCount = emailIds.length;
     } else if (plan.action === 'archive') {
+      await gmailApi.archiveEmails(emailIds);
       await gmailApi.createFilter(plan.sender, 'ARCHIVE');
       execution.gmailCount = emailIds.length;
     }

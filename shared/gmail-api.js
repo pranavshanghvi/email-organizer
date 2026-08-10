@@ -140,6 +140,22 @@ async function trashEmails(messageIds) {
   return trashed;
 }
 
+async function archiveEmails(messageIds) {
+  const client = await authorize();
+  let archived = 0;
+
+  for (const msgId of messageIds) {
+    await client.users.messages.modify({
+      userId: 'me',
+      id: msgId,
+      requestBody: { removeLabelIds: ['INBOX'] },
+    });
+    archived++;
+  }
+
+  return archived;
+}
+
 async function listLabels() {
   const client = await authorize();
   const res = await client.users.labels.list({ userId: 'me' });
@@ -220,4 +236,5 @@ module.exports = {
   createFilter,
   moveEmailsToLabel,
   trashEmails,
+  archiveEmails,
 };

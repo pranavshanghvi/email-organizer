@@ -16,13 +16,29 @@ const getApiUrl = () => {
 
 const API_URL = getApiUrl();
 
-export default function Dashboard({ plans, onExecute }) {
+export default function Dashboard({ plans, onExecute, onStageChange, triggerReview, onReviewTriggered }) {
   const [stage, setStage] = useState('start'); // start → analyze → categorize → review → done
   const [senders, setSenders] = useState([]);
   const [loading, setLoading] = useState(false);
   const [categorized, setCategorized] = useState({});
   const [labels, setLabels] = useState([]);
   const [newLabelModal, setNewLabelModal] = useState(null);
+  const [successMessage, setSuccessMessage] = useState(null);
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
+
+  useEffect(() => {
+    if (triggerReview) {
+      proceedToReview();
+      onReviewTriggered();
+    }
+  }, [triggerReview]);
+
+  useEffect(() => {
+    if (successMessage) {
+      const timer = setTimeout(() => setSuccessMessage(null), 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [successMessage]);
 
   useEffect(() => {
     const loadLabels = async () => {
@@ -46,6 +62,11 @@ export default function Dashboard({ plans, onExecute }) {
     return suggestedName;
   };
 
+  const showEmailPreview = (senderEmail, senderCount) => {
+    const gmailSearchUrl = `https://mail.google.com/mail/u/0/#search/from:${encodeURIComponent(senderEmail)}`;
+    window.open(gmailSearchUrl, '_blank');
+  };
+
   const analyzeSenders = async () => {
     setLoading(true);
     try {
@@ -62,7 +83,10 @@ export default function Dashboard({ plans, onExecute }) {
         init[s.email] = { action: null, folder: null, notes: '' };
       });
       setCategorized(init);
-      setTimeout(() => setStage('categorize'), 100);
+      setTimeout(() => {
+        setStage('categorize');
+        onStageChange?.('categorize');
+      }, 100);
     } catch (err) {
       console.error('Failed to load senders:', err);
       alert('Error scanning Gmail: ' + err.message);
@@ -84,23 +108,28 @@ export default function Dashboard({ plans, onExecute }) {
       return;
     }
     setStage('review');
+    onStageChange?.('review');
   };
 
   const commitPlan = async () => {
+    console.log('commitPlan called');
     setLoading(true);
 
     try {
       // Only process senders with selected actions (batch processing)
       const decidedSenders = senders.filter(s => categorized[s.email]?.action);
+      console.log('Decided senders:', decidedSenders.length);
 
       const keep = decidedSenders.filter(s => categorized[s.email]?.action === 'keep');
       const route = decidedSenders.filter(s => categorized[s.email]?.action === 'route');
       const deleteBlock = decidedSenders.filter(s => categorized[s.email]?.action === 'deleteBlock');
       const deleteNoBlock = decidedSenders.filter(s => categorized[s.email]?.action === 'deleteNoBlock');
 
+      console.log('Creating plans...', { keep: keep.length, route: route.length, deleteBlock: deleteBlock.length, deleteNoBlock: deleteNoBlock.length });
+
       // Execute each action
       for (const sender of route) {
-        await fetch(`${API_URL}/api/plans`, {
+        const res = await fetch(`${API_URL}/api/plans`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -110,10 +139,11 @@ export default function Dashboard({ plans, onExecute }) {
             folderName: categorized[sender.email].folder,
           }),
         });
+        if (!res.ok) throw new Error(`Failed to create route plan: ${res.status}`);
       }
 
       for (const sender of deleteBlock) {
-        await fetch(`${API_URL}/api/plans`, {
+        const res = await fetch(`${API_URL}/api/plans`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -122,28 +152,42 @@ export default function Dashboard({ plans, onExecute }) {
             action: 'delete',
           }),
         });
+        if (!res.ok) throw new Error(`Failed to create delete plan: ${res.status}`);
       }
 
       for (const sender of deleteNoBlock) {
-        await fetch(`${API_URL}/api/plans`, {
+        const res = await fetch(`${API_URL}/api/plans`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            name: `Delete (no block) ${sender.email}`,
+            name: `Archive ${sender.email}`,
             sender: sender.email,
-            action: 'delete',
+            action: 'archive',
           }),
         });
+        if (!res.ok) throw new Error(`Failed to create archive plan: ${res.status}`);
       }
 
+      console.log('Executing plans...');
       // Execute all newly created plans immediately
       const plansRes = await fetch(`${API_URL}/api/plans`);
+      if (!plansRes.ok) throw new Error(`Failed to fetch plans: ${plansRes.status}`);
       const allPlans = await plansRes.json();
       for (const plan of allPlans) {
-        await fetch(`${API_URL}/api/plans/${plan.id}/execute`, { method: 'POST' });
+        const execRes = await fetch(`${API_URL}/api/plans/${plan.id}/execute`, { method: 'POST' });
+        if (!execRes.ok) throw new Error(`Failed to execute plan ${plan.id}: ${execRes.status}`);
       }
 
-      alert(`✓ Batch executed!\n\nKept: ${keep.length}\nRouted: ${route.length}\nDeleted + Blocked: ${deleteBlock.length}\nDeleted (no block): ${deleteNoBlock.length}\n\nContinue with more senders.`);
+      console.log('Batch executed successfully');
+
+      // Show success message and modal
+      setSuccessMessage({
+        kept: keep.length,
+        routed: route.length,
+        deletedBlocked: deleteBlock.length,
+        deletedNoBlock: deleteNoBlock.length,
+      });
+      setShowSuccessModal(true);
 
       // Clear only the processed senders' decisions
       const newCategorized = { ...categorized };
@@ -153,6 +197,7 @@ export default function Dashboard({ plans, onExecute }) {
       setCategorized(newCategorized);
 
       setStage('categorize');
+      onStageChange?.('categorize');
     } catch (err) {
       console.error('Error executing plan:', err);
       alert('Error executing plan: ' + err.message);
@@ -161,9 +206,67 @@ export default function Dashboard({ plans, onExecute }) {
     }
   };
 
-  if (stage === 'start') {
-    return (
-      <div className="dashboard">
+  // Compute review section data
+  const keep = senders.filter(s => categorized[s.email]?.action === 'keep');
+  const route = senders.filter(s => categorized[s.email]?.action === 'route');
+  const deleteBlock = senders.filter(s => categorized[s.email]?.action === 'deleteBlock');
+  const deleteNoBlock = senders.filter(s => categorized[s.email]?.action === 'deleteNoBlock');
+  const review = senders.filter(s => categorized[s.email]?.action === 'review');
+
+  return (
+    <div className="dashboard">
+      {/* Success Banner */}
+      {successMessage && (
+        <div className="success-banner">
+          <div className="success-banner-content">
+            <span className="success-icon">✓</span>
+            <div>
+              <strong>Batch executed successfully!</strong>
+              <p>Kept: {successMessage.kept} | Routed: {successMessage.routed} | Deleted + Blocked: {successMessage.deletedBlocked} | Archived: {successMessage.deletedNoBlock}</p>
+            </div>
+          </div>
+          <button className="close-banner" onClick={() => setSuccessMessage(null)}>×</button>
+        </div>
+      )}
+
+      {/* Success Modal */}
+      {showSuccessModal && successMessage && (
+        <div className="modal-overlay">
+          <div className="modal success-modal">
+            <h3>✓ Batch Executed Successfully!</h3>
+            <div className="success-details">
+              <div className="success-item">
+                <span className="success-label">Kept:</span>
+                <span className="success-count">{successMessage.kept}</span>
+              </div>
+              <div className="success-item">
+                <span className="success-label">Routed to Folder:</span>
+                <span className="success-count">{successMessage.routed}</span>
+              </div>
+              <div className="success-item">
+                <span className="success-label">Deleted + Blocked:</span>
+                <span className="success-count">{successMessage.deletedBlocked}</span>
+              </div>
+              <div className="success-item">
+                <span className="success-label">Archived:</span>
+                <span className="success-count">{successMessage.deletedNoBlock}</span>
+              </div>
+            </div>
+            <p className="success-note">Continue with more senders or review your actions.</p>
+            <div className="modal-buttons">
+              <button
+                className="primary-btn"
+                onClick={() => setShowSuccessModal(false)}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Start Stage */}
+      {stage === 'start' && (
         <div className="stage-container">
           <h2>Email Cleanup Organizer</h2>
           <p>Analyze your Gmail inbox and create a customized cleanup plan.</p>
@@ -171,199 +274,185 @@ export default function Dashboard({ plans, onExecute }) {
             {loading ? 'Scanning Gmail...' : '🔍 Scan & Analyze'}
           </button>
         </div>
-      </div>
-    );
-  }
+      )}
 
-  if (stage === 'categorize') {
-    return (
-      <div className="dashboard">
-        <h2>Step 1: Categorize Senders</h2>
-        <p>For each sender, decide what to do:</p>
-        <div className="categorize-container">
-          <table className="categorize-table">
-            <thead>
-              <tr>
-                <th>Sender Email</th>
-                <th>Count</th>
-                <th>Action</th>
-                <th>Folder (if routing)</th>
-                <th>Notes</th>
-              </tr>
-            </thead>
-            <tbody>
-              {senders.map(sender => (
-                <tr key={sender.email}>
-                  <td className="sender-email">{sender.email}</td>
-                  <td className="count">{sender.count.toLocaleString()}</td>
-                  <td>
-                    <select
-                      value={categorized[sender.email]?.action || ''}
-                      onChange={(e) => updateSenderDecision(sender.email, 'action', e.target.value)}
-                    >
-                      <option value="">Choose...</option>
-                      <option value="keep">Keep</option>
-                      <option value="route">Route to folder</option>
-                      <option value="deleteBlock">Delete + Block</option>
-                      <option value="deleteNoBlock">Delete (no block)</option>
-                      <option value="review">Manual review</option>
-                    </select>
-                  </td>
-                  <td>
-                    {categorized[sender.email]?.action === 'route' ? (
-                      <div className="folder-selector">
-                        <select
-                          value={categorized[sender.email]?.folder || ''}
-                          onChange={(e) => {
-                            if (e.target.value === '__create_new__') {
-                              const suggested = getSuggestedFolder(sender.email);
-                              setNewLabelModal({ sender: sender.email, suggested });
-                            } else {
-                              updateSenderDecision(sender.email, 'folder', e.target.value);
-                            }
-                          }}
-                        >
-                          <option value="">Select folder...</option>
-                          {labels.map(label => (
-                            <option key={label.id} value={label.name}>
-                              {label.name}
-                            </option>
-                          ))}
-                          <option value="__create_new__">+ Create new folder</option>
-                        </select>
-                      </div>
-                    ) : (
-                      <span className="disabled-text">—</span>
-                    )}
-                  </td>
-                  <td>
-                    <input
-                      type="text"
-                      placeholder="Notes..."
-                      value={categorized[sender.email]?.notes || ''}
-                      onChange={(e) => updateSenderDecision(sender.email, 'notes', e.target.value)}
-                    />
-                  </td>
+      {/* Categorize Stage */}
+      {stage === 'categorize' && (
+        <>
+          <h2>Step 1: Categorize Senders</h2>
+          <p>For each sender, decide what to do:</p>
+          <div className="categorize-container">
+            <table className="categorize-table">
+              <thead>
+                <tr>
+                  <th>Sender Email</th>
+                  <th>Count</th>
+                  <th>Action</th>
+                  <th>Folder (if routing)</th>
+                  <th>Notes</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {senders.map(sender => (
+                  <tr key={sender.email}>
+                    <td className="sender-email" onClick={() => showEmailPreview(sender.email, sender.count)} title="Click to preview emails">
+                      <span style={{ cursor: 'pointer', textDecoration: 'underline', color: '#3b82f6' }}>{sender.email}</span>
+                    </td>
+                    <td className="count">{sender.count.toLocaleString()}</td>
+                    <td>
+                      <select
+                        value={categorized[sender.email]?.action || ''}
+                        onChange={(e) => updateSenderDecision(sender.email, 'action', e.target.value)}
+                      >
+                        <option value="">Choose...</option>
+                        <option value="keep">Keep</option>
+                        <option value="route">Route to folder</option>
+                        <option value="deleteBlock">Delete + Block</option>
+                        <option value="deleteNoBlock">Delete (no block)</option>
+                        <option value="review">Manual review</option>
+                      </select>
+                    </td>
+                    <td>
+                      {categorized[sender.email]?.action === 'route' ? (
+                        <div className="folder-selector">
+                          <select
+                            value={categorized[sender.email]?.folder || ''}
+                            onChange={(e) => {
+                              if (e.target.value === '__create_new__') {
+                                const suggested = getSuggestedFolder(sender.email);
+                                setNewLabelModal({ sender: sender.email, suggested });
+                              } else {
+                                updateSenderDecision(sender.email, 'folder', e.target.value);
+                              }
+                            }}
+                          >
+                            <option value="">Select folder...</option>
+                            {labels.map(label => (
+                              <option key={label.id} value={label.name}>
+                                {label.name}
+                              </option>
+                            ))}
+                            <option value="__create_new__">+ Create new folder</option>
+                          </select>
+                        </div>
+                      ) : (
+                        <span className="disabled-text">—</span>
+                      )}
+                    </td>
+                    <td>
+                      <input
+                        type="text"
+                        placeholder="Notes..."
+                        value={categorized[sender.email]?.notes || ''}
+                        onChange={(e) => updateSenderDecision(sender.email, 'notes', e.target.value)}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
 
-        {newLabelModal && (
-          <div className="modal-overlay">
-            <div className="modal">
-              <h3>Create New Folder</h3>
-              <p>For: {newLabelModal.sender}</p>
-              <input
-                type="text"
-                id="new-label-input"
-                placeholder="Folder name"
-                defaultValue={newLabelModal.suggested}
-                autoFocus
-              />
-              <div className="modal-buttons">
-                <button
-                  className="secondary-btn"
-                  onClick={() => setNewLabelModal(null)}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="primary-btn"
-                  onClick={() => {
-                    const input = document.getElementById('new-label-input');
-                    const folderName = input.value.trim();
-                    if (folderName) {
-                      updateSenderDecision(newLabelModal.sender, 'folder', folderName);
-                      setLabels([...labels, { id: folderName, name: folderName }]);
-                      setNewLabelModal(null);
-                    }
-                  }}
-                >
-                  Create
-                </button>
+          {newLabelModal && (
+            <div className="modal-overlay">
+              <div className="modal">
+                <h3>Create New Folder</h3>
+                <p>For: {newLabelModal.sender}</p>
+                <input
+                  type="text"
+                  id="new-label-input"
+                  placeholder="Folder name"
+                  defaultValue={newLabelModal.suggested}
+                  autoFocus
+                />
+                <div className="modal-buttons">
+                  <button
+                    className="secondary-btn"
+                    onClick={() => setNewLabelModal(null)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="primary-btn"
+                    onClick={() => {
+                      const input = document.getElementById('new-label-input');
+                      const folderName = input.value.trim();
+                      if (folderName) {
+                        updateSenderDecision(newLabelModal.sender, 'folder', folderName);
+                        setLabels([...labels, { id: folderName, name: folderName }]);
+                        setNewLabelModal(null);
+                      }
+                    }}
+                  >
+                    Create
+                  </button>
+                </div>
               </div>
             </div>
+          )}
+
+          <div className="button-group">
+            <button className="secondary-btn" onClick={() => setStage('start')}>← Back</button>
+            <button className="primary-btn" onClick={proceedToReview}>Review Plan →</button>
           </div>
-        )}
+        </>
+      )}
 
-        <div className="button-group">
-          <button className="secondary-btn" onClick={() => setStage('start')}>← Back</button>
-          <button className="primary-btn" onClick={proceedToReview}>Review Plan →</button>
-        </div>
-      </div>
-    );
-  }
+      {/* Review Stage */}
+      {stage === 'review' && (
+        <>
+          <h2>Step 2: Review Plan</h2>
 
-  if (stage === 'review') {
-    const keep = senders.filter(s => categorized[s.email]?.action === 'keep');
-    const route = senders.filter(s => categorized[s.email]?.action === 'route');
-    const deleteBlock = senders.filter(s => categorized[s.email]?.action === 'deleteBlock');
-    const deleteNoBlock = senders.filter(s => categorized[s.email]?.action === 'deleteNoBlock');
-    const review = senders.filter(s => categorized[s.email]?.action === 'review');
+          <div className="review-grid">
+            <div className="review-section keep">
+              <h3>✓ Keep ({keep.length})</h3>
+              <ul>
+                {keep.map(s => <li key={s.email}>{s.email} ({s.count})</li>)}
+              </ul>
+            </div>
 
-    return (
-      <div className="dashboard">
-        <h2>Step 2: Review Plan</h2>
+            <div className="review-section route">
+              <h3>→ Route to Folder ({route.length})</h3>
+              <ul>
+                {route.map(s => (
+                  <li key={s.email}>{s.email} → {categorized[s.email]?.folder} ({s.count})</li>
+                ))}
+              </ul>
+            </div>
 
-        <div className="review-grid">
-          <div className="review-section keep">
-            <h3>✓ Keep ({keep.length})</h3>
-            <ul>
-              {keep.map(s => <li key={s.email}>{s.email} ({s.count})</li>)}
-            </ul>
+            <div className="review-section delete">
+              <h3>🗑️ Delete + Block ({deleteBlock.length})</h3>
+              <ul>
+                {deleteBlock.map(s => <li key={s.email}>{s.email} ({s.count})</li>)}
+              </ul>
+            </div>
+
+            <div className="review-section delete-noblock">
+              <h3>🗑️ Delete (No Block) ({deleteNoBlock.length})</h3>
+              <p style={{ fontSize: '0.875rem', color: '#666' }}>For auth/transactional emails</p>
+              <ul>
+                {deleteNoBlock.map(s => <li key={s.email}>{s.email} ({s.count})</li>)}
+              </ul>
+            </div>
+
+            <div className="review-section review">
+              <h3>⚠️ Manual Review ({review.length})</h3>
+              <ul>
+                {review.map(s => (
+                  <li key={s.email}>{s.email} — {categorized[s.email]?.notes} ({s.count})</li>
+                ))}
+              </ul>
+            </div>
           </div>
 
-          <div className="review-section route">
-            <h3>→ Route to Folder ({route.length})</h3>
-            <ul>
-              {route.map(s => (
-                <li key={s.email}>{s.email} → {categorized[s.email]?.folder} ({s.count})</li>
-              ))}
-            </ul>
+          <div className="button-group">
+            <button className="secondary-btn" onClick={() => { setStage('categorize'); onStageChange?.('categorize'); }}>← Edit</button>
+            <button className="commit-btn" onClick={commitPlan} disabled={loading}>
+              {loading ? '⏳ Executing...' : '✓ Commit Plan'}
+            </button>
           </div>
-
-          <div className="review-section delete">
-            <h3>🗑️ Delete + Block ({deleteBlock.length})</h3>
-            <ul>
-              {deleteBlock.map(s => <li key={s.email}>{s.email} ({s.count})</li>)}
-            </ul>
-          </div>
-
-          <div className="review-section delete-noblock">
-            <h3>🗑️ Delete (No Block) ({deleteNoBlock.length})</h3>
-            <p style={{ fontSize: '0.875rem', color: '#666' }}>For auth/transactional emails</p>
-            <ul>
-              {deleteNoBlock.map(s => <li key={s.email}>{s.email} ({s.count})</li>)}
-            </ul>
-          </div>
-
-          <div className="review-section review">
-            <h3>⚠️ Manual Review ({review.length})</h3>
-            <ul>
-              {review.map(s => (
-                <li key={s.email}>{s.email} — {categorized[s.email]?.notes} ({s.count})</li>
-              ))}
-            </ul>
-          </div>
-        </div>
-
-        <div className="button-group">
-          <button className="secondary-btn" onClick={() => setStage('categorize')}>← Edit</button>
-          <button className="commit-btn" onClick={commitPlan}>✓ Commit Plan</button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="dashboard">
-      <div className="stage-container">
-        <h2>✓ Plan Committed!</h2>
-        <p>Your cleanup plan has been saved and will be executed.</p>
-        <p style={{ color: '#666', fontSize: '0.875rem' }}>Redirecting...</p>
-      </div>
+        </>
+      )}
     </div>
   );
 }
