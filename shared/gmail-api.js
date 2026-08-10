@@ -143,15 +143,22 @@ async function batchModify(messageIds, addLabelIds = [], removeLabelIds = []) {
 
   for (let i = 0; i < messageIds.length; i += CHUNK) {
     const chunk = messageIds.slice(i, i + CHUNK);
-    await client.users.messages.batchModify({
-      userId: 'me',
-      requestBody: {
-        ids: chunk,
-        addLabelIds,
-        removeLabelIds,
-      },
-    });
-    processed += chunk.length;
+    try {
+      const result = await client.users.messages.batchModify({
+        userId: 'me',
+        requestBody: {
+          ids: chunk,
+          addLabelIds: addLabelIds.length > 0 ? addLabelIds : undefined,
+          removeLabelIds: removeLabelIds.length > 0 ? removeLabelIds : undefined,
+        },
+      });
+      console.log(`batchModify chunk ${Math.floor(i / CHUNK) + 1}: processed ${chunk.length} messages, response:`, result.data);
+      processed += chunk.length;
+    } catch (err) {
+      console.error(`batchModify error on chunk ${Math.floor(i / CHUNK) + 1}:`, err.message);
+      console.error('Full error:', err);
+      throw err;
+    }
   }
 
   return processed;
