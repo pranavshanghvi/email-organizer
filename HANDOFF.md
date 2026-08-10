@@ -72,6 +72,7 @@ Single repository structure: frontend in `web/src`, backend in `web/server.js`, 
 - Added comprehensive CSS styling for both components (light + dark modes)
 - All state wired up: `successMessage` holds counts, `showSuccessModal` controls visibility
 - Component lifecycle: success triggered after batch execution, banner auto-hides, modal requires close, then returns to categorize stage
+- **FIXED: Execute button hanging** — added fetchWithTimeout (30s creation, 60s execution) on frontend, made backend async (fire-and-forget pattern) so large batch operations (137+ emails) don't block UI
 
 ### Known issues
 - Scan takes 15-30 seconds (fetching email metadata from Gmail)
