@@ -250,15 +250,41 @@ export default function Dashboard({ plans, onExecute, onStageChange, triggerRevi
       console.log('Executing plans...');
       console.log('Total plans to execute:', createdPlanIds.length);
 
-      // Execute only the plans created in this batch — never re-run old plans.
+      // Fire the execute requests (the backend runs them in the background).
       for (const planId of createdPlanIds) {
         console.log('Executing plan', planId);
         const execRes = await fetchWithTimeout(`${API_URL}/api/plans/${planId}/execute`, { method: 'POST' }, 60000);
         if (!execRes.ok) throw new Error(`Failed to execute plan ${planId}: ${execRes.status}`);
-        console.log('Plan executed', planId);
+        console.log('Plan execution started', planId);
       }
 
-      console.log('Batch executed successfully');
+      // Wait for the background jobs to actually finish so the success
+      // message reflects reality instead of guessing.
+      const finished = [];
+      const pending = [...createdPlanIds];
+      const deadline = Date.now() + 120000; // up to 2 minutes for large batches
+      while (pending.length > 0 && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 1500));
+        try {
+          const res = await fetch(`${API_URL}/api/plans`);
+          const allPlans = await res.json();
+          for (const planId of [...pending]) {
+            const plan = allPlans.find(p => p.id === planId);
+            const lastExec = plan?.executions?.[plan.executions.length - 1];
+            if (lastExec && lastExec.status !== 'running') {
+              finished.push({ planId, status: lastExec.status, error: lastExec.error });
+              pending.splice(pending.indexOf(planId), 1);
+            }
+          }
+        } catch (err) {
+          // transient network error — retry on the next poll
+        }
+      }
+
+      const failedRuns = finished.filter(r => r.status !== 'success');
+      if (failedRuns.length > 0) {
+        alert(`⚠️ ${failedRuns.length} of ${createdPlanIds.length} action(s) failed. ${failedRuns[0].error || 'See history for details.'}`);
+      }
 
       // Show success message and modal
       setSuccessMessage({

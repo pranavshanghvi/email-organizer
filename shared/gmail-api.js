@@ -112,61 +112,63 @@ async function createFilter(senderEmail, action) {
       requestBody: filterBody,
     });
   } catch (err) {
-    // Gmail rejects an identical duplicate filter with 409 — this is normal
+    // Gmail rejects an identical duplicate filter with status 400 / reason
+    // "failedPrecondition" / message "Filter already exists" — this is normal
     // when a sender is processed more than once. Treat it as idempotent.
-    const reason = err?.errors?.[0]?.reason;
-    if (err.code === 409 || reason === 'duplicate') {
+    const reason = err?.response?.data?.error?.errors?.[0]?.reason
+      || err?.errors?.[0]?.reason;
+    const status = err?.response?.status || err?.status;
+    const isDuplicate =
+      status === 409 ||
+      reason === 'duplicate' ||
+      reason === 'failedPrecondition' ||
+      /already exists/i.test(err?.message || '');
+    if (isDuplicate) {
       return;
     }
     throw err;
   }
 }
 
-async function moveEmailsToLabel(messageIds, labelId) {
+// Apply a label change to many messages in bulk using Gmail's batchModify,
+// which handles up to 1000 messages per call. This replaces the old
+// one-email-at-a-time loops that made execution take 30+ minutes for a
+// sender with thousands of emails.
+async function batchModify(messageIds, addLabelIds = [], removeLabelIds = []) {
   const client = await authorize();
-  let moved = 0;
+  if (!messageIds.length) return 0;
 
-  for (const msgId of messageIds) {
-    await client.users.messages.modify({
+  const CHUNK = 1000; // Gmail API limit per batchModify call
+  let processed = 0;
+
+  for (let i = 0; i < messageIds.length; i += CHUNK) {
+    const chunk = messageIds.slice(i, i + CHUNK);
+    await client.users.messages.batchModify({
       userId: 'me',
-      id: msgId,
-      requestBody: { addLabelIds: [labelId] },
+      requestBody: {
+        ids: chunk,
+        addLabelIds,
+        removeLabelIds,
+      },
     });
-    moved++;
+    processed += chunk.length;
   }
 
-  return moved;
+  return processed;
+}
+
+async function moveEmailsToLabel(messageIds, labelId) {
+  return batchModify(messageIds, [labelId], []);
 }
 
 async function trashEmails(messageIds) {
-  const client = await authorize();
-  let trashed = 0;
-
-  for (const msgId of messageIds) {
-    await client.users.messages.trash({
-      userId: 'me',
-      id: msgId,
-    });
-    trashed++;
-  }
-
-  return trashed;
+  // Adding the TRASH label moves messages to Trash (recoverable), unlike
+  // batchDelete which permanently deletes.
+  return batchModify(messageIds, ['TRASH'], []);
 }
 
 async function archiveEmails(messageIds) {
-  const client = await authorize();
-  let archived = 0;
-
-  for (const msgId of messageIds) {
-    await client.users.messages.modify({
-      userId: 'me',
-      id: msgId,
-      requestBody: { removeLabelIds: ['INBOX'] },
-    });
-    archived++;
-  }
-
-  return archived;
+  return batchModify(messageIds, [], ['INBOX']);
 }
 
 async function listLabels() {

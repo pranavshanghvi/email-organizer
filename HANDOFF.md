@@ -82,10 +82,12 @@ Single repository structure: frontend in `web/src`, backend in `web/server.js`, 
 3. **Gmail preview wrong/empty** — search URL now encodes the full `from:` query exactly as Gmail does (`#search/from%3Asender%40domain.com`).
 4. **Execute/Commit button stuck disabled** — `analyzeSenders()` never reset `loading` on success, so the Commit button stayed disabled. Now reset in `finally`.
 5. **Execution was failing silently in the background** (found during testing — earlier runs recorded errors while the UI showed success):
-   - `createFilter` now treats Gmail's 409 "duplicate" as idempotent (re-processing a sender no longer errors).
+   - `createFilter` now treats Gmail's duplicate-filter error as idempotent (status 400 / reason `failedPrecondition` / message "Filter already exists") so re-processing a sender no longer fails the run.
    - **Delete + Block** now actually blocks future emails (creates a TRASH filter) and no longer crashes when the Obsidian vault is missing (skipped gracefully).
    - **Archive** now creates the correct auto-archive filter (`removeLabelIds: ['INBOX']`) instead of an invalid ARCHIVE label.
    - `commitPlan` now executes **only the plans created in the current batch** — previously it re-ran all historical plans matching a sender, causing duplicate-filter failures.
+6. **THE real "nothing happened on backend" bug (found via Pranav's live test):** move/archive/delete looped through emails **one at a time** (`users.messages.modify` per email) — 4,359 emails meant 4,359 sequential API calls (~30+ min), so execution looked dead. Replaced with Gmail's **`batchModify`** (up to 1,000 emails per call): 4,359 emails now finish in ~18s. Verified live: 704-equifax archive, 1-wellsfargo archive, and 4,359-emails→Personal all record `success`.
+7. **Success message is now truthful, not optimistic** — `commitPlan` polls the created plans until the background jobs reach a final state, then alerts if any failed (with the error) before showing the banner.
 
 ### Known issues
 - Pagination hardcoded to 5 pages (MAX_PAGES in gmail-api.js)
