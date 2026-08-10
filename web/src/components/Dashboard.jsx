@@ -127,9 +127,18 @@ export default function Dashboard({ plans, onExecute, onStageChange, triggerRevi
 
       console.log('Creating plans...', { keep: keep.length, route: route.length, deleteBlock: deleteBlock.length, deleteNoBlock: deleteNoBlock.length });
 
-      // Execute each action
+      // Helper function with timeout
+      const fetchWithTimeout = (url, options = {}, timeout = 30000) => {
+        return Promise.race([
+          fetch(url, options),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Request timeout')), timeout))
+        ]);
+      };
+
+      // Create plans for each action type
       for (const sender of route) {
-        const res = await fetch(`${API_URL}/api/plans`, {
+        console.log('Creating route plan for', sender.email);
+        const res = await fetchWithTimeout(`${API_URL}/api/plans`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -143,7 +152,8 @@ export default function Dashboard({ plans, onExecute, onStageChange, triggerRevi
       }
 
       for (const sender of deleteBlock) {
-        const res = await fetch(`${API_URL}/api/plans`, {
+        console.log('Creating delete+block plan for', sender.email);
+        const res = await fetchWithTimeout(`${API_URL}/api/plans`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -156,7 +166,8 @@ export default function Dashboard({ plans, onExecute, onStageChange, triggerRevi
       }
 
       for (const sender of deleteNoBlock) {
-        const res = await fetch(`${API_URL}/api/plans`, {
+        console.log('Creating archive plan for', sender.email);
+        const res = await fetchWithTimeout(`${API_URL}/api/plans`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -169,13 +180,21 @@ export default function Dashboard({ plans, onExecute, onStageChange, triggerRevi
       }
 
       console.log('Executing plans...');
-      // Execute all newly created plans immediately
-      const plansRes = await fetch(`${API_URL}/api/plans`);
+      // Fetch all plans (includes all previous ones too)
+      const plansRes = await fetchWithTimeout(`${API_URL}/api/plans`, {}, 10000);
       if (!plansRes.ok) throw new Error(`Failed to fetch plans: ${plansRes.status}`);
       const allPlans = await plansRes.json();
+      console.log('Total plans to execute:', allPlans.length);
+
+      // Execute only newly created plans (just the decided senders)
       for (const plan of allPlans) {
-        const execRes = await fetch(`${API_URL}/api/plans/${plan.id}/execute`, { method: 'POST' });
-        if (!execRes.ok) throw new Error(`Failed to execute plan ${plan.id}: ${execRes.status}`);
+        const senderMatch = decidedSenders.find(s => plan.sender === s.email);
+        if (senderMatch) {
+          console.log('Executing plan for', plan.sender);
+          const execRes = await fetchWithTimeout(`${API_URL}/api/plans/${plan.id}/execute`, { method: 'POST' }, 60000);
+          if (!execRes.ok) throw new Error(`Failed to execute plan ${plan.id}: ${execRes.status}`);
+          console.log('Plan executed for', plan.sender);
+        }
       }
 
       console.log('Batch executed successfully');

@@ -107,35 +107,53 @@ app.post('/api/plans/:id/execute', async (req, res) => {
       obsidianCount: 0,
     };
 
-    const emails = await gmailApi.listEmailsFromSender(plan.sender);
-    const emailIds = emails.map(e => e.id);
+    // Return immediately, process in background
+    res.json({ status: 'executing', message: 'Plan execution started' });
 
-    if (plan.action === 'delete') {
-      await gmailApi.trashEmails(emailIds);
-      execution.gmailCount = emailIds.length;
+    // Process in background without blocking response
+    (async () => {
+      try {
+        console.log(`Executing plan ${plan.id} for sender ${plan.sender} (${plan.action})`);
+        const emails = await gmailApi.listEmailsFromSender(plan.sender);
+        const emailIds = emails.map(e => e.id);
+        console.log(`Found ${emailIds.length} emails from ${plan.sender}`);
 
-      const obsidianFiles = obsidianApi.listEmailFilesFromSender(plan.sender);
-      const filePaths = obsidianFiles.map(f => f.path);
-      execution.obsidianCount = obsidianApi.deleteObsidianFiles(filePaths);
-    } else if (plan.action === 'folder') {
-      const labelId = await gmailApi.createLabel(plan.folderName);
-      await gmailApi.moveEmailsToLabel(emailIds, labelId);
-      await gmailApi.createFilter(plan.sender, labelId);
-      execution.gmailCount = emailIds.length;
-    } else if (plan.action === 'archive') {
-      await gmailApi.archiveEmails(emailIds);
-      await gmailApi.createFilter(plan.sender, 'ARCHIVE');
-      execution.gmailCount = emailIds.length;
-    }
+        if (plan.action === 'delete') {
+          console.log(`Trashing ${emailIds.length} emails...`);
+          await gmailApi.trashEmails(emailIds);
+          execution.gmailCount = emailIds.length;
 
-    execution.status = 'success';
-    plan.executions.push(execution);
-    plan.lastExecuted = execution.timestamp;
-    fs.writeFileSync(planPath, JSON.stringify(plan, null, 2));
+          const obsidianFiles = obsidianApi.listEmailFilesFromSender(plan.sender);
+          const filePaths = obsidianFiles.map(f => f.path);
+          execution.obsidianCount = obsidianApi.deleteObsidianFiles(filePaths);
+        } else if (plan.action === 'folder') {
+          console.log(`Moving ${emailIds.length} emails to folder ${plan.folderName}...`);
+          const labelId = await gmailApi.createLabel(plan.folderName);
+          await gmailApi.moveEmailsToLabel(emailIds, labelId);
+          await gmailApi.createFilter(plan.sender, labelId);
+          execution.gmailCount = emailIds.length;
+        } else if (plan.action === 'archive') {
+          console.log(`Archiving ${emailIds.length} emails...`);
+          await gmailApi.archiveEmails(emailIds);
+          await gmailApi.createFilter(plan.sender, 'ARCHIVE');
+          execution.gmailCount = emailIds.length;
+        }
 
-    res.json(execution);
+        execution.status = 'success';
+        console.log(`Plan ${plan.id} execution completed successfully`);
+        plan.executions.push(execution);
+        plan.lastExecuted = execution.timestamp;
+        fs.writeFileSync(planPath, JSON.stringify(plan, null, 2));
+      } catch (backgroundErr) {
+        console.error(`Plan ${plan.id} execution failed:`, backgroundErr);
+        execution.status = 'error';
+        execution.error = backgroundErr.message;
+        plan.executions.push(execution);
+        fs.writeFileSync(planPath, JSON.stringify(plan, null, 2));
+      }
+    })();
   } catch (err) {
-    console.error('Failed to execute plan:', err);
+    console.error('Failed to start plan execution:', err);
     res.status(500).json({ error: err.message });
   }
 });
