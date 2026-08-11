@@ -56,9 +56,13 @@ async function listEmailsFromSender(senderEmail) {
   let pageToken = null;
 
   while (true) {
+    // Scope to INBOX only so the actions match exactly what the scan showed
+    // the user. Acting on archived/trashed messages (which the count never
+    // reflected) would be surprising.
     const res = await client.users.messages.list({
       userId: 'me',
       q: query,
+      labelIds: ['INBOX'],
       maxResults: 500,
       pageToken,
     });
@@ -203,21 +207,55 @@ async function mapWithConcurrency(items, limit, mapper, onItemDone) {
   return results;
 }
 
+// Exact count of a sender's emails currently in the INBOX. Paginates the same
+// `from:sender in:inbox` query a user would run in Gmail, so the number the app
+// shows matches what they'd see there — this is the source of "true" counts.
+// One query per 500 emails, so cheap for the vast majority of senders.
+async function countInboxFromSender(client, senderEmail) {
+  let total = 0;
+  let pageToken = null;
+  while (true) {
+    const res = await client.users.messages.list({
+      userId: 'me',
+      q: `from:${senderEmail} in:inbox`,
+      maxResults: 500,
+      pageToken,
+    });
+    total += (res.data.messages || []).length;
+    pageToken = res.data.nextPageToken;
+    if (!pageToken) break;
+  }
+  return total;
+}
+
 async function listAllSenders(onProgress) {
   try {
     const client = await authorize();
     const senders = {};
 
     let pageToken = null;
-    const MAX_PAGES = 5; // Limit to first 2500 emails for performance
+    // Phase 1 — discover who has email in the inbox by reading each message's
+    // From header. This is deliberately bounded: fetching a message's header
+    // costs one API query each, and Gmail rate-limits a user to roughly 5,000
+    // queries per minute. A larger window reliably trips the limit and fails
+    // the whole scan. We stay well under it here so the scan is dependable.
+    // Counts are made exact afterwards in phase 2, so this window only bounds
+    // which senders appear, not the accuracy of the numbers shown.
+    const MAX_PAGES = 5;
     const CONCURRENCY = 25; // Fetch this many messages' headers at the same time
     let pageCount = 0;
     let total = 0;
     let processed = 0;
+    let truncated = false;
 
     while (pageCount < MAX_PAGES) {
+      // Scan INBOX only. The counts the user sees are inbox counts — they
+      // should match a `from:sender in:inbox` search in Gmail, not the whole
+      // mailbox (which includes archived/sent mail and was why counts looked
+      // wrong).
       const res = await client.users.messages.list({
         userId: 'me',
+        labelIds: ['INBOX'],
         maxResults: 500,
         pageToken,
       });
@@ -227,6 +265,7 @@ async function listAllSenders(onProgress) {
 
       total += messages.length;
       pageToken = res.data.nextPageToken;
+      truncated = !!pageToken;
       pageCount++;
 
       // Fetch each message's From header in parallel batches instead of
@@ -268,11 +307,35 @@ async function listAllSenders(onProgress) {
       }
     }
 
-    const result = Object.entries(senders)
-      .map(([email, count]) => ({ email, count }))
-      .sort((a, b) => b.count - a.count);
+    let result = Object.entries(senders)
+      .map(([email, count]) => ({ email, count }));
 
-    return result;
+    // Phase 2 — replace the window counts with exact inbox totals. For each
+    // discovered sender, paginate `from:sender in:inbox` once per 500 emails.
+    // If we trip Gmail's rate limit mid-way, keep the discovery counts for the
+    // remaining senders rather than failing the whole scan.
+    const REFINE_CONCURRENCY = 10;
+    let refined = 0;
+    for (let i = 0; i < result.length; i += REFINE_CONCURRENCY) {
+      const batch = result.slice(i, i + REFINE_CONCURRENCY);
+      try {
+        await Promise.all(batch.map(async (s) => {
+          s.count = await countInboxFromSender(client, s.email);
+        }));
+        refined += batch.length;
+      } catch (err) {
+        const isQuota = /quota|rate limit/i.test(err.message || '');
+        if (isQuota) {
+          console.log(`Count refinement stopped early (rate limit) after ${refined} of ${result.length} senders`);
+          break;
+        }
+        // A single bad sender shouldn't kill the scan — keep its window count.
+        console.log('Count refinement skipped a sender:', err.message);
+      }
+    }
+
+    result.sort((a, b) => b.count - a.count);
+    return { senders: result, truncated };
   } catch (err) {
     console.error('listAllSenders error:', err.message);
     throw err;

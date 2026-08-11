@@ -33,11 +33,20 @@ function generateId() {
 // Live progress for the current Gmail scan, polled by the frontend.
 let scanStatus = { status: 'idle', fetched: 0, total: 0, error: null };
 
+// Run background plan executions one at a time. Firing them concurrently made
+// several Gmail API calls at once and tripped Gmail's per-user rate limit
+// ("Quota exceeded ... Units per minute per user"), silently failing batches.
+let executionChain = Promise.resolve();
+function enqueueExecution(fn) {
+  executionChain = executionChain.then(fn).catch(() => {});
+  return executionChain;
+}
+
 app.get('/api/senders', async (req, res) => {
   try {
     console.log('Loading senders...');
     scanStatus = { status: 'running', fetched: 0, total: 0, error: null };
-    const senders = await gmailApi.listAllSenders((progress) => {
+    const { senders, truncated } = await gmailApi.listAllSenders((progress) => {
       scanStatus = { ...scanStatus, ...progress };
     });
     scanStatus = {
@@ -45,9 +54,14 @@ app.get('/api/senders', async (req, res) => {
       fetched: scanStatus.fetched || 0,
       total: scanStatus.total || 0,
       error: null,
+      truncated,
     };
-    console.log('Loaded', senders.length, 'unique senders');
-    res.json(senders || []);
+    console.log('Loaded', (senders || []).length, 'unique senders' + (truncated ? ' (scan capped — inbox larger than scan window)' : ''));
+    res.json({
+      senders: senders || [],
+      truncated: !!truncated,
+      scannedCount: scanStatus.total || 0,
+    });
   } catch (err) {
     scanStatus = {
       status: 'error',
@@ -114,6 +128,59 @@ app.post('/api/plans', (req, res) => {
   }
 });
 
+// The actual Gmail work for one plan. Reads the sender's inbox emails and
+// applies the plan's action, then records the outcome in the plan file.
+async function runPlanExecution(planPath, plan, execution) {
+  try {
+    console.log(`Executing plan ${plan.id} for sender ${plan.sender} (${plan.action})`);
+    const emails = await gmailApi.listEmailsFromSender(plan.sender);
+    const emailIds = emails.map(e => e.id);
+    console.log(`Found ${emailIds.length} emails from ${plan.sender}`);
+
+    if (plan.action === 'delete') {
+      console.log(`Trashing ${emailIds.length} emails...`);
+      await gmailApi.trashEmails(emailIds);
+      execution.gmailCount = emailIds.length;
+
+      // "Block" future emails from this sender by auto-trashing them.
+      await gmailApi.createFilter(plan.sender, { addLabelIds: ['TRASH'] });
+
+      // Obsidian cleanup is optional — a missing vault must not fail the run.
+      try {
+        const obsidianFiles = obsidianApi.listEmailFilesFromSender(plan.sender);
+        const filePaths = obsidianFiles.map(f => f.path);
+        execution.obsidianCount = obsidianApi.deleteObsidianFiles(filePaths);
+      } catch (obsErr) {
+        console.log(`Obsidian cleanup skipped for ${plan.sender}: ${obsErr.message}`);
+      }
+    } else if (plan.action === 'folder') {
+      console.log(`Moving ${emailIds.length} emails to folder ${plan.folderName}...`);
+      const labelId = await gmailApi.createLabel(plan.folderName);
+      await gmailApi.moveEmailsToLabel(emailIds, labelId);
+      await gmailApi.createFilter(plan.sender, { addLabelIds: [labelId] });
+      execution.gmailCount = emailIds.length;
+    } else if (plan.action === 'archive') {
+      console.log(`Archiving ${emailIds.length} emails...`);
+      await gmailApi.archiveEmails(emailIds);
+      // Auto-archive future emails by removing them from the INBOX.
+      await gmailApi.createFilter(plan.sender, { removeLabelIds: ['INBOX'] });
+      execution.gmailCount = emailIds.length;
+    }
+
+    execution.status = 'success';
+    console.log(`Plan ${plan.id} execution completed successfully`);
+    plan.executions.push(execution);
+    plan.lastExecuted = execution.timestamp;
+    fs.writeFileSync(planPath, JSON.stringify(plan, null, 2));
+  } catch (backgroundErr) {
+    console.error(`Plan ${plan.id} execution failed:`, backgroundErr);
+    execution.status = 'error';
+    execution.error = backgroundErr.message;
+    plan.executions.push(execution);
+    fs.writeFileSync(planPath, JSON.stringify(plan, null, 2));
+  }
+}
+
 app.post('/api/plans/:id/execute', async (req, res) => {
   try {
     const planPath = getPlanPath(req.params.id);
@@ -132,57 +199,9 @@ app.post('/api/plans/:id/execute', async (req, res) => {
     // Return immediately, process in background
     res.json({ status: 'executing', message: 'Plan execution started' });
 
-    // Process in background without blocking response
-    (async () => {
-      try {
-        console.log(`Executing plan ${plan.id} for sender ${plan.sender} (${plan.action})`);
-        const emails = await gmailApi.listEmailsFromSender(plan.sender);
-        const emailIds = emails.map(e => e.id);
-        console.log(`Found ${emailIds.length} emails from ${plan.sender}`);
-
-        if (plan.action === 'delete') {
-          console.log(`Trashing ${emailIds.length} emails...`);
-          await gmailApi.trashEmails(emailIds);
-          execution.gmailCount = emailIds.length;
-
-          // "Block" future emails from this sender by auto-trashing them.
-          await gmailApi.createFilter(plan.sender, { addLabelIds: ['TRASH'] });
-
-          // Obsidian cleanup is optional — a missing vault must not fail the run.
-          try {
-            const obsidianFiles = obsidianApi.listEmailFilesFromSender(plan.sender);
-            const filePaths = obsidianFiles.map(f => f.path);
-            execution.obsidianCount = obsidianApi.deleteObsidianFiles(filePaths);
-          } catch (obsErr) {
-            console.log(`Obsidian cleanup skipped for ${plan.sender}: ${obsErr.message}`);
-          }
-        } else if (plan.action === 'folder') {
-          console.log(`Moving ${emailIds.length} emails to folder ${plan.folderName}...`);
-          const labelId = await gmailApi.createLabel(plan.folderName);
-          await gmailApi.moveEmailsToLabel(emailIds, labelId);
-          await gmailApi.createFilter(plan.sender, { addLabelIds: [labelId] });
-          execution.gmailCount = emailIds.length;
-        } else if (plan.action === 'archive') {
-          console.log(`Archiving ${emailIds.length} emails...`);
-          await gmailApi.archiveEmails(emailIds);
-          // Auto-archive future emails by removing them from the INBOX.
-          await gmailApi.createFilter(plan.sender, { removeLabelIds: ['INBOX'] });
-          execution.gmailCount = emailIds.length;
-        }
-
-        execution.status = 'success';
-        console.log(`Plan ${plan.id} execution completed successfully`);
-        plan.executions.push(execution);
-        plan.lastExecuted = execution.timestamp;
-        fs.writeFileSync(planPath, JSON.stringify(plan, null, 2));
-      } catch (backgroundErr) {
-        console.error(`Plan ${plan.id} execution failed:`, backgroundErr);
-        execution.status = 'error';
-        execution.error = backgroundErr.message;
-        plan.executions.push(execution);
-        fs.writeFileSync(planPath, JSON.stringify(plan, null, 2));
-      }
-    })();
+    // Process in background without blocking response, one plan at a time so
+    // concurrent batches don't exceed Gmail's per-user rate limit.
+    enqueueExecution(() => runPlanExecution(planPath, plan, execution));
   } catch (err) {
     console.error('Failed to start plan execution:', err);
     res.status(500).json({ error: err.message });

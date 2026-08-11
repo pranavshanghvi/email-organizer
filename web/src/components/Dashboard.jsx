@@ -30,6 +30,7 @@ export default function Dashboard({ plans, onExecute, onStageChange, triggerRevi
   const [newLabelModal, setNewLabelModal] = useState(null);
   const [successMessage, setSuccessMessage] = useState(null);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
+  const [scanNotice, setScanNotice] = useState(null);
 
   // On mount, restore a previous scan if one was saved (e.g. after the page
   // navigated away to Gmail and came back, or after a reload).
@@ -71,6 +72,9 @@ export default function Dashboard({ plans, onExecute, onStageChange, triggerRevi
       proceedToReview();
       onReviewTriggered();
     }
+    // proceedToReview/onReviewTriggered are recreated every render, so listing
+    // them would make this effect fire on every render. Intentionally omitted.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [triggerReview]);
 
   useEffect(() => {
@@ -131,15 +135,28 @@ export default function Dashboard({ plans, onExecute, onStageChange, triggerRevi
       const res = await fetch(`${API_URL}/api/senders`);
       if (!res.ok) throw new Error(`API error: ${res.status}`);
       const data = await res.json();
-      console.log('Got senders:', data.length);
+      // Support both the current { senders, truncated } shape and the older
+      // plain-array shape.
+      const sendersList = Array.isArray(data) ? data : (data.senders || []);
+      const truncated = !Array.isArray(data) && !!data.truncated;
+      const scannedCount = !Array.isArray(data) ? (data.scannedCount || 0) : 0;
+      console.log('Got senders:', sendersList.length, truncated ? '(scan window capped by Gmail rate limit)' : '');
 
-      setSenders(data);
+      setSenders(sendersList);
       // Initialize categorized with empty decisions
       const init = {};
-      data.forEach(s => {
+      sendersList.forEach(s => {
         init[s.email] = { action: null, folder: null, notes: '' };
       });
       setCategorized(init);
+      // Be honest about the scan window: every count shown is exact (each is
+      // verified against Gmail), but senders whose only emails are older than
+      // the scanned window won't appear at all.
+      setScanNotice(
+        truncated
+          ? `Counts are exact, but this scan covered only the most recent ${scannedCount.toLocaleString()} inbox emails. If your inbox has more than that, a few senders with only older emails may be missing — you can rescan later.`
+          : null
+      );
       setStage('categorize');
       onStageChange?.('categorize');
     } catch (err) {
@@ -186,8 +203,9 @@ export default function Dashboard({ plans, onExecute, onStageChange, triggerRevi
       console.log('Creating plans...', { keep: keep.length, route: route.length, deleteBlock: deleteBlock.length, deleteNoBlock: deleteNoBlock.length });
 
       // Track the plans created in THIS batch so we only execute those —
-      // never re-run older plans for the same sender.
-      const createdPlanIds = [];
+      // never re-run older plans for the same sender. Each entry carries its
+      // action so the success feedback can report real email counts per type.
+      const createdPlans = [];
 
       // Helper function with timeout
       const fetchWithTimeout = (url, options = {}, timeout = 30000) => {
@@ -212,7 +230,7 @@ export default function Dashboard({ plans, onExecute, onStageChange, triggerRevi
         });
         if (!res.ok) throw new Error(`Failed to create route plan: ${res.status}`);
         const createdPlan = await res.json();
-        if (createdPlan?.id) createdPlanIds.push(createdPlan.id);
+        if (createdPlan?.id) createdPlans.push({ id: createdPlan.id, action: 'folder' });
       }
 
       for (const sender of deleteBlock) {
@@ -228,7 +246,7 @@ export default function Dashboard({ plans, onExecute, onStageChange, triggerRevi
         });
         if (!res.ok) throw new Error(`Failed to create delete plan: ${res.status}`);
         const createdPlan = await res.json();
-        if (createdPlan?.id) createdPlanIds.push(createdPlan.id);
+        if (createdPlan?.id) createdPlans.push({ id: createdPlan.id, action: 'delete' });
       }
 
       for (const sender of deleteNoBlock) {
@@ -244,36 +262,43 @@ export default function Dashboard({ plans, onExecute, onStageChange, triggerRevi
         });
         if (!res.ok) throw new Error(`Failed to create archive plan: ${res.status}`);
         const createdPlan = await res.json();
-        if (createdPlan?.id) createdPlanIds.push(createdPlan.id);
+        if (createdPlan?.id) createdPlans.push({ id: createdPlan.id, action: 'archive' });
       }
 
       console.log('Executing plans...');
-      console.log('Total plans to execute:', createdPlanIds.length);
+      console.log('Total plans to execute:', createdPlans.length);
 
-      // Fire the execute requests (the backend runs them in the background).
-      for (const planId of createdPlanIds) {
-        console.log('Executing plan', planId);
-        const execRes = await fetchWithTimeout(`${API_URL}/api/plans/${planId}/execute`, { method: 'POST' }, 60000);
-        if (!execRes.ok) throw new Error(`Failed to execute plan ${planId}: ${execRes.status}`);
-        console.log('Plan execution started', planId);
+      // Fire the execute requests (the backend runs them in the background,
+      // one at a time).
+      for (const p of createdPlans) {
+        console.log('Executing plan', p.id);
+        const execRes = await fetchWithTimeout(`${API_URL}/api/plans/${p.id}/execute`, { method: 'POST' }, 60000);
+        if (!execRes.ok) throw new Error(`Failed to execute plan ${p.id}: ${execRes.status}`);
+        console.log('Plan execution started', p.id);
       }
 
-      // Wait for the background jobs to actually finish so the success
-      // message reflects reality instead of guessing.
+      // Wait for the background jobs to actually finish so the feedback
+      // reflects what really happened instead of guessing.
       const finished = [];
-      const pending = [...createdPlanIds];
-      const deadline = Date.now() + 120000; // up to 2 minutes for large batches
+      const pending = [...createdPlans];
+      const deadline = Date.now() + 180000; // up to 3 minutes for large batches
       while (pending.length > 0 && Date.now() < deadline) {
         await new Promise(r => setTimeout(r, 1500));
         try {
           const res = await fetch(`${API_URL}/api/plans`);
           const allPlans = await res.json();
-          for (const planId of [...pending]) {
-            const plan = allPlans.find(p => p.id === planId);
+          for (const p of [...pending]) {
+            const plan = allPlans.find(x => x.id === p.id);
             const lastExec = plan?.executions?.[plan.executions.length - 1];
             if (lastExec && lastExec.status !== 'running') {
-              finished.push({ planId, status: lastExec.status, error: lastExec.error });
-              pending.splice(pending.indexOf(planId), 1);
+              finished.push({
+                planId: p.id,
+                action: p.action,
+                status: lastExec.status,
+                error: lastExec.error,
+                gmailCount: lastExec.gmailCount || 0,
+              });
+              pending.splice(pending.indexOf(p), 1);
             }
           }
         } catch (err) {
@@ -281,19 +306,48 @@ export default function Dashboard({ plans, onExecute, onStageChange, triggerRevi
         }
       }
 
-      const failedRuns = finished.filter(r => r.status !== 'success');
-      if (failedRuns.length > 0) {
-        alert(`⚠️ ${failedRuns.length} of ${createdPlanIds.length} action(s) failed. ${failedRuns[0].error || 'See history for details.'}`);
-      }
+      // Anything still pending when the deadline hit counts as a failure so
+      // we never claim success for work that didn't finish.
+      pending.forEach(p => finished.push({
+        planId: p.id,
+        action: p.action,
+        status: 'error',
+        error: 'Timed out while waiting — check the History screen.',
+        gmailCount: 0,
+      }));
 
-      // Show success message and modal
-      setSuccessMessage({
-        kept: keep.length,
-        routed: route.length,
-        deletedBlocked: deleteBlock.length,
-        deletedNoBlock: deleteNoBlock.length,
-      });
-      setShowSuccessModal(true);
+      const failedRuns = finished.filter(r => r.status !== 'success');
+      const succeededRuns = finished.filter(r => r.status === 'success');
+
+      if (failedRuns.length > 0) {
+        // Honest feedback: something failed, so this is NOT a success.
+        const actionLabel = { folder: 'Routed', delete: 'Delete + Block', archive: 'Archived' };
+        const details = failedRuns.slice(0, 5).map(r =>
+          `${actionLabel[r.action] || r.action} failed: ${r.error || 'unknown error'}`
+        );
+        setSuccessMessage({
+          type: 'error',
+          failedCount: failedRuns.length,
+          totalCount: createdPlans.length,
+          details,
+        });
+        setShowSuccessModal(true);
+      } else {
+        // Sum the actual emails Gmail reported as processed, per action type.
+        const emailCounts = { folder: 0, delete: 0, archive: 0 };
+        succeededRuns.forEach(r => { emailCounts[r.action] += r.gmailCount; });
+        setSuccessMessage({
+          type: 'success',
+          kept: keep.length,
+          routed: route.length,
+          routedEmails: emailCounts.folder,
+          deletedBlocked: deleteBlock.length,
+          deletedBlockedEmails: emailCounts.delete,
+          deletedNoBlock: deleteNoBlock.length,
+          deletedNoBlockEmails: emailCounts.archive,
+        });
+        setShowSuccessModal(true);
+      }
 
       // Clear only the processed senders' decisions
       const newCategorized = { ...categorized };
@@ -322,13 +376,27 @@ export default function Dashboard({ plans, onExecute, onStageChange, triggerRevi
   return (
     <div className="dashboard">
       {/* Success Banner */}
-      {successMessage && (
+      {successMessage?.type === 'success' && (
         <div className="success-banner">
           <div className="success-banner-content">
             <span className="success-icon">✓</span>
             <div>
               <strong>Batch executed successfully!</strong>
-              <p>Kept: {successMessage.kept} | Routed: {successMessage.routed} | Deleted + Blocked: {successMessage.deletedBlocked} | Archived: {successMessage.deletedNoBlock}</p>
+              <p>Kept: {successMessage.kept} | Routed: {successMessage.routedEmails} | Deleted + Blocked: {successMessage.deletedBlockedEmails} | Archived: {successMessage.deletedNoBlockEmails}</p>
+            </div>
+          </div>
+          <button className="close-banner" onClick={() => setSuccessMessage(null)}>×</button>
+        </div>
+      )}
+
+      {/* Error Banner */}
+      {successMessage?.type === 'error' && (
+        <div className="error-banner">
+          <div className="success-banner-content">
+            <span className="success-icon error-icon">⚠</span>
+            <div>
+              <strong>{successMessage.failedCount} of {successMessage.totalCount} action(s) failed</strong>
+              {successMessage.details.map((d, i) => <p key={i}>{d}</p>)}
             </div>
           </div>
           <button className="close-banner" onClick={() => setSuccessMessage(null)}>×</button>
@@ -336,29 +404,56 @@ export default function Dashboard({ plans, onExecute, onStageChange, triggerRevi
       )}
 
       {/* Success Modal */}
-      {showSuccessModal && successMessage && (
+      {showSuccessModal && successMessage?.type === 'success' && (
         <div className="modal-overlay">
           <div className="modal success-modal">
             <h3>✓ Batch Executed Successfully!</h3>
             <div className="success-details">
               <div className="success-item">
                 <span className="success-label">Kept:</span>
-                <span className="success-count">{successMessage.kept}</span>
+                <span className="success-count">{successMessage.kept} sender(s)</span>
               </div>
               <div className="success-item">
                 <span className="success-label">Routed to Folder:</span>
-                <span className="success-count">{successMessage.routed}</span>
+                <span className="success-count">{successMessage.routedEmails} emails</span>
               </div>
               <div className="success-item">
                 <span className="success-label">Deleted + Blocked:</span>
-                <span className="success-count">{successMessage.deletedBlocked}</span>
+                <span className="success-count">{successMessage.deletedBlockedEmails} emails</span>
               </div>
               <div className="success-item">
                 <span className="success-label">Archived:</span>
-                <span className="success-count">{successMessage.deletedNoBlock}</span>
+                <span className="success-count">{successMessage.deletedNoBlockEmails} emails</span>
               </div>
             </div>
             <p className="success-note">Continue with more senders or review your actions.</p>
+            <div className="modal-buttons">
+              <button
+                className="primary-btn"
+                onClick={() => setShowSuccessModal(false)}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Error Modal */}
+      {showSuccessModal && successMessage?.type === 'error' && (
+        <div className="modal-overlay">
+          <div className="modal success-modal">
+            <h3 className="error-heading">⚠ Some actions failed</h3>
+            <div className="success-details error-details">
+              <p className="error-summary">
+                {successMessage.failedCount} of {successMessage.totalCount} action(s) did not
+                complete successfully. Those senders were not fully processed.
+              </p>
+              <ul className="error-list">
+                {successMessage.details.map((d, i) => <li key={i}>{d}</li>)}
+              </ul>
+              <p className="error-note">Full details are in the History screen.</p>
+            </div>
             <div className="modal-buttons">
               <button
                 className="primary-btn"
@@ -405,6 +500,11 @@ export default function Dashboard({ plans, onExecute, onStageChange, triggerRevi
         <>
           <h2>Step 1: Categorize Senders</h2>
           <p>For each sender, decide what to do:</p>
+          {scanNotice && (
+            <div className="scan-notice" role="status">
+              ⓘ {scanNotice}
+            </div>
+          )}
           <div className="categorize-container">
             <table className="categorize-table">
               <thead>
