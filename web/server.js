@@ -208,7 +208,9 @@ app.post('/api/plans/:id/execute', async (req, res) => {
   }
 });
 
-const PORT = 3001;
+// Railway assigns an ephemeral port via the PORT env var; fall back to 3001
+// for local dev. Hardcoding 3001 broke the Railway deployment (502).
+const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`Email Organizer API running on http://localhost:${PORT}`);
 });
