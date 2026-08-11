@@ -521,10 +521,13 @@ export default function Dashboard({ plans, onExecute, onStageChange, triggerRevi
                   <tr key={sender.email}>
                     <td className="sender-email">
                       <a
-                        href={getGmailSearchUrl(sender.email)}
-                        target="_blank"
-                        rel="noopener noreferrer"
+                        href="#"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          window.open(getGmailSearchUrl(sender.email), '_blank');
+                        }}
                         title="Open all emails from this sender in Gmail"
+                        style={{ cursor: 'pointer' }}
                       >
                         {sender.email}
                       </a>
