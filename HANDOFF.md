@@ -10,13 +10,14 @@ This file ensures continuity when switching between AI models or platforms due t
 
 **Objective:** Build production-ready **web deployment** and **native iOS app** sharing the existing backend API.
 
-**Status:** Ready for OR to execute. Desktop (Mac) version is verified working. Backend API is stable and production-ready.
+**Status:** **Railway backend is LIVE and responding** (fixed 502 this session). Desktop (Mac) version is verified working. Backend API is stable and production-ready. **Web Gmail OAuth needs Google Cloud action by Pranav** (deferred for now).
 
 ### What exists today
 - ✅ **Backend API** (Express, `web/server.js`) — fully functional, handles scan, plan creation, execution, filter creation
-- ✅ **React web frontend** (`web/src/`) — working, but only deployed locally; needs Railway deployment
-- ✅ **Gmail OAuth** — working; tokens stored locally, scales to any user
+- ✅ **React web frontend** (`web/src/`) — working locally; Railway backend live at `https://web-production-d755d.up.railway.app` (but Gmail endpoints need OAuth credentials)
+- ✅ **Gmail OAuth** — working locally; tokens stored locally, scales to any user
 - ✅ **Email counts** — exact inbox-only counts, Gmail rate-limited to ~2500 emails per scan
+- ✅ **Railway backend** — deployed, responding on `/api/plans`, `/api/senders/status`; `server.js` now respects `process.env.PORT` (fixed 502)
 
 ### Web Version (Priority 1)
 Deploy existing React app to production with:
@@ -79,8 +80,9 @@ Native iOS app using React Native or SwiftUI:
 ### Work Breakdown (for OR)
 
 **Phase 1: Web Deployment (2-3 hours)**
-- [ ] Set up Railway backend (if not done)
-- [ ] Test web app against Railway backend
+- [x] Set up Railway backend — **DONE, live at https://web-production-d755d.up.railway.app**
+- [x] Fix Railway 502 (PORT env var) — **DONE**
+- [ ] Test web app against Railway backend (needs OAuth setup)
 - [ ] Verify OAuth works at Railway domain
 - [ ] Verify all API routes respond correctly
 - [ ] Do full end-to-end test (scan → execute → verify in Gmail)
@@ -140,7 +142,7 @@ Native iOS app using React Native or SwiftUI:
 
 Single repository structure: frontend in `web/src`, backend in `web/server.js`, shared code in `shared/` at repo root (server requires `../shared/gmail-api`).
 
-**Current running state (2026-08-11, end of session 3):** Both local servers may or may not be running. Check before assuming. Work committed and pushed to `main`.
+**Current running state (2026-08-11, end of session 4):** Both local servers may or may not be running. Check before assuming. Work committed and pushed to `main`.
 
 ## Critical rules (will break things if violated)
 
@@ -162,9 +164,9 @@ Single repository structure: frontend in `web/src`, backend in `web/server.js`, 
 
 ---
 
-## Current status — SESSION 3 RESULT (2026-08-11)
+## Current status — SESSION 4 RESULT (2026-08-11)
 
-> **Last updated:** 2026-08-11, session 3 end. Major bugs fixed and VERIFIED via Gmail.
+> **Last updated:** 2026-08-11, session 4 end. Railway 502 fixed, sender links committed, desktop verified.
 
 ### What's now VERIFIED working
 - **Archive actually moves emails** — end-to-end test passed: archived `frontdesk@irondoorsforever.com` (1 inbox email) through the app's own API, then confirmed via Gmail the inbox count went 1 → 0. The email genuinely left the inbox. ✅
@@ -174,29 +176,36 @@ Single repository structure: frontend in `web/src`, backend in `web/server.js`, 
 - **The empty-array batchModify "fix" was unnecessary** — proven via no-op Gmail probes: the exact archive (`add:[], remove:[INBOX]`) and delete (`add:[TRASH], remove:[]`) request shapes both SUCCEED. Only both-arrays-empty fails, which the app never sends. ✅
 - **Equifax mystery solved** — all 706 `info@e.equifax.com` emails are in TRASH (Pranav trashed them manually out of frustration). Gmail's default search EXCLUDES Trash, so the later "Delete + Block" found 0 and recorded "success, 0 emails" — a reporting lie, not a deletion failure. ✅
 
-### What's implemented but needs a real browser click-through
+### ✅ NEW THIS SESSION (Session 4)
+- **Railway backend is LIVE** — `https://web-production-d755d.up.railway.app` responding with HTTP 200 on `/api/plans`, `/api/senders/status`
+- **Railway 502 root cause fixed** — `server.js` now listens on `process.env.PORT || 3001` (was hardcoded 3001); Railway assigned port 8080, logs confirm
+- **Sender email links committed** — `Dashboard.jsx` changed from `target="_blank"` to `window.open(url, '_blank')` (was uncommitted from pre-disconnect work)
+- **Both fixes pushed to origin/main** — Railway auto-redeployed successfully
+
+### Implemented but needs a real browser click-through
 - **Honest success feedback** — frontend now only shows the success banner/modal when EVERY action in the batch succeeded, and shows actual EMAIL counts (e.g. "491 emails archived") instead of sender counts. Any failure → error banner + modal listing what failed, no "success" claim. Backend records per-plan success/error/gmailCount truthfully.
 - **Serialized execution** — backend now runs background plan executions one at a time (Promise chain queue) to avoid Gmail's per-user rate limit, which earlier batches tripped ("Quota exceeded ... Units per minute per user" recorded in plan files).
 - **Transparent scan notice** — when the inbox is larger than the 2,500-email scan window, a notice explains counts are exact but older senders may be missing.
-- **Sender email links** — code path looks correct (`target="_blank"`, Gmail search URL). **NOT yet click-tested by Pranav.**
+- **Sender email links** — code path looks correct (`window.open(..., '_blank')`, Gmail search URL). **NOT yet click-tested by Pranav.**
 
 ### Known constraints (measured this session)
 - **Gmail rate limit ≈ 5,000 queries per minute per user.** A full 15,500-message inbox scan trips it and fails the whole scan. Hence the 2,500-message discovery window + exact-count refinement design. The app shows a notice when the window is capped.
 - Old plan files in `~/.email-organizer/plans/` include many failed/successful test runs (equifax archives, quota errors, "Invalid label: ARCHIVE" from an old code version, etc.) — don't read these as current behavior.
+- **Web Gmail endpoints need OAuth setup** — `/api/labels` on Railway returns `credentials.json not found at /root/credentials.json`. Requires Google Cloud Console action (Web OAuth client + redirect URI + Railway env vars). User chose to defer; desktop remains the working path.
 
 ---
 
 ## In-flight work — PRIORITIES
 
-**Session 4+ (Web + iOS Expansion — ready for OR to execute):**
-1. **Web deployment** — deploy React frontend to Railway; verify all API endpoints work at Railway domain
-2. **iOS app** — build native iOS app (React Native or SwiftUI); same backend, same workflow
-3. **E2E verification** — test both web and iOS through full scan → execute → verify cycle
+**Session 5+ (Web + iOS Expansion — ready for OR to execute):**
+1. **Web OAuth setup** — create Web OAuth client in Google Cloud Console, add Railway redirect URI, add credentials to Railway env vars
+2. **Web E2E verification** — test web app through full scan → execute → verify cycle
+3. **iOS app** — build native iOS app (React Native or SwiftUI); same backend, same workflow
 
-**Session 3 carry-over (if needed before OR starts):**
-1. **Pranav: do a real browser click-through** — scan → pick 2-3 small senders → archive/delete → verify in Gmail. ✅ **DONE** (2026-08-11)
-2. **Verify sender email links** — click a sender email; should open new Gmail search tab. ✅ **FIXED** (changed to `window.open(..., '_blank')`)
-3. **Deployment to Railway** — now first step of Phase 1 above
+**Session 4 carry-over (if needed before OR starts):**
+1. **Pranav: do a real browser click-through** — scan → pick 2–3 small senders → archive/delete → verify in Gmail. (Code was verified via API calls; the human UI flow is the last mile.)
+2. **Verify sender email links** — click a sender email on the categorize screen; it should open a new Gmail search tab.
+3. **Verify concurrent-batch execution** — a batch of 2–3 senders should process sequentially without quota errors (serialization is implemented).
 
 ---
 
@@ -215,11 +224,11 @@ Single repository structure: frontend in `web/src`, backend in `web/server.js`, 
 - Fixed CI build: silenced a pre-existing `react-hooks/exhaustive-deps` warning.
 - Ran end-to-end archive test through the app's own API: PASS (inbox 1→0 for frontdesk@irondoorsforever.com).
 
-**Session 4 (CURRENT, ready for OR):**
-- Verified end-to-end UI flow: scan → categorize → execute → success modal ✅
-- Fixed sender email links: changed from `target="_blank"` to `window.open(..., '_blank')` so clicks open new Gmail search tabs ✅
-- Auto-refresh after execute: UX improvement flagged (dashboard should auto-refresh counts after batch execution without requiring manual rescan)
-- Ready for Web + iOS expansion: backend is stable, API is proven, time to scale to web/mobile
+**Session 4 (COMPLETED):**
+- Railway backend 502 fixed (hardcoded PORT → process.env.PORT), auto-redeployed, verified live
+- Pre-disconnect sender-email-link fix committed (Dashboard.jsx)
+- Verified end-to-end UI flow: scan → categorize → execute → success modal ✅ (via API, not yet browser click-through by Pranav)
+- Web Gmail OAuth deferred per Pranav's choice — desktop remains working path
 
 ---
 
